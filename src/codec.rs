@@ -1,4 +1,4 @@
-//! `Decoder` / `Encoder` implementations for SRT, WebVTT, and ASS/SSA.
+//! `Decoder` / `Encoder` implementations for SRT and WebVTT.
 //!
 //! The decoder consumes a single `Packet` carrying the cue text in its
 //! format's natural form and emits a [`Frame::Subtitle`] with the fully
@@ -13,11 +13,10 @@ use oxideav_core::{
     CodecId, CodecParameters, Error, Frame, MediaType, Packet, Result, TimeBase,
 };
 
-use crate::{ass, srt, webvtt};
+use crate::{srt, webvtt};
 
 pub const SRT_CODEC_ID: &str = "subrip";
 pub const WEBVTT_CODEC_ID: &str = "webvtt";
-pub const ASS_CODEC_ID: &str = "ass";
 
 /// Build a subtitle decoder by dispatching on `params.codec_id`.
 pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
@@ -46,14 +45,12 @@ pub fn make_encoder(params: &CodecParameters) -> Result<Box<dyn Encoder>> {
 enum Kind {
     Srt,
     WebVtt,
-    Ass,
 }
 
 fn classify(id: &CodecId) -> Result<Kind> {
     match id.as_str() {
         SRT_CODEC_ID => Ok(Kind::Srt),
         WEBVTT_CODEC_ID => Ok(Kind::WebVtt),
-        ASS_CODEC_ID => Ok(Kind::Ass),
         other => Err(Error::unsupported(format!(
             "not a subtitle codec id: {other}"
         ))),
@@ -78,7 +75,6 @@ impl Decoder for SubtitleDecoder {
         let cue = match self.kind {
             Kind::Srt => srt::bytes_to_cue(&packet.data)?,
             Kind::WebVtt => webvtt::bytes_to_cue(&packet.data)?,
-            Kind::Ass => ass::bytes_to_cue(&packet.data)?,
         };
         // If the packet carried an overriding pts/duration, honour it.
         let mut cue = cue;
@@ -134,7 +130,6 @@ impl Encoder for SubtitleEncoder {
         let payload = match self.kind {
             Kind::Srt => srt::cue_to_bytes(cue),
             Kind::WebVtt => webvtt::cue_to_bytes(cue),
-            Kind::Ass => ass::cue_to_bytes(cue),
         };
         let tb = TimeBase::new(1, 1_000_000);
         let mut pkt = Packet::new(0, tb, payload);
