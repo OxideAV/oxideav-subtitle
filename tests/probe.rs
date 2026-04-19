@@ -36,7 +36,9 @@ fn demuxer_yields_one_packet_per_cue() {
             .to_vec();
     let mut c = Cursor::new(src);
     let name = reg.probe_input(&mut c, Some("srt")).unwrap();
-    let mut dmx = reg.open_demuxer(&name, Box::new(c)).unwrap();
+    let mut dmx = reg
+        .open_demuxer(&name, Box::new(c), &oxideav_core::NullCodecResolver)
+        .unwrap();
     let p1 = dmx.next_packet().unwrap();
     assert_eq!(p1.pts, Some(1_000_000));
     let p2 = dmx.next_packet().unwrap();
@@ -58,7 +60,9 @@ fn mux_srt_reemits_cues() {
         b"1\n00:00:01,000 --> 00:00:02,000\nfirst\n\n2\n00:00:03,000 --> 00:00:04,500\nsecond\n"
             .to_vec();
     let c = Cursor::new(src);
-    let mut dmx = reg.open_demuxer("srt", Box::new(c)).unwrap();
+    let mut dmx = reg
+        .open_demuxer("srt", Box::new(c), &oxideav_core::NullCodecResolver)
+        .unwrap();
     let stream = dmx.streams()[0].clone();
     let mut packets = Vec::new();
     while let Ok(p) = dmx.next_packet() {

@@ -24,7 +24,7 @@ use std::io::{Read, SeekFrom, Write};
 
 use oxideav_container::{ContainerRegistry, Demuxer, Muxer, ProbeData, ReadSeek, WriteSeek};
 use oxideav_core::{
-    CodecId, CodecParameters, Error, MediaType, Packet, Result, StreamInfo, TimeBase,
+    CodecId, CodecParameters, CodecResolver, Error, MediaType, Packet, Result, StreamInfo, TimeBase,
 };
 
 use crate::ir::SubtitleTrack;
@@ -100,7 +100,7 @@ fn read_all(mut input: Box<dyn ReadSeek>) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn open_srt(input: Box<dyn ReadSeek>) -> Result<Box<dyn Demuxer>> {
+fn open_srt(input: Box<dyn ReadSeek>, _codecs: &dyn CodecResolver) -> Result<Box<dyn Demuxer>> {
     let buf = read_all(input)?;
     let track = srt::parse(&buf)?;
     Ok(Box::new(TextSubtitleDemuxer::new(
@@ -111,7 +111,7 @@ fn open_srt(input: Box<dyn ReadSeek>) -> Result<Box<dyn Demuxer>> {
     )))
 }
 
-fn open_webvtt(input: Box<dyn ReadSeek>) -> Result<Box<dyn Demuxer>> {
+fn open_webvtt(input: Box<dyn ReadSeek>, _codecs: &dyn CodecResolver) -> Result<Box<dyn Demuxer>> {
     let buf = read_all(input)?;
     let track = webvtt::parse(&buf)?;
     Ok(Box::new(TextSubtitleDemuxer::new(
@@ -149,7 +149,10 @@ trait FormatOps: Send + Sync + 'static {
     fn bytes_to_cue(bytes: &[u8]) -> Result<oxideav_core::SubtitleCue>;
 }
 
-fn open_fmt<F: FormatOps>(input: Box<dyn ReadSeek>) -> Result<Box<dyn Demuxer>> {
+fn open_fmt<F: FormatOps>(
+    input: Box<dyn ReadSeek>,
+    _codecs: &dyn CodecResolver,
+) -> Result<Box<dyn Demuxer>> {
     let buf = read_all(input)?;
     let track = F::parse(&buf)?;
     Ok(Box::new(TextSubtitleDemuxer::new(
