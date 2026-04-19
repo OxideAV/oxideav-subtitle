@@ -71,7 +71,7 @@ pub mod ttml;
 pub mod vplayer;
 pub mod webvtt;
 
-use oxideav_codec::CodecRegistry;
+use oxideav_codec::{CodecInfo, CodecRegistry};
 use oxideav_container::ContainerRegistry;
 use oxideav_core::{CodecCapabilities, CodecId, MediaType};
 
@@ -109,98 +109,42 @@ fn subtitle_caps(impl_name: &str) -> CodecCapabilities {
 /// is registered independently — no dispatch branch to maintain here.
 pub fn register_codecs(reg: &mut CodecRegistry) {
     // SRT + WebVTT share codec.rs's dispatcher (legacy).
-    reg.register_both(
-        CodecId::new(codec::SRT_CODEC_ID),
-        subtitle_caps("subrip_sw"),
-        codec::make_decoder,
-        codec::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(codec::WEBVTT_CODEC_ID),
-        subtitle_caps("webvtt_sw"),
-        codec::make_decoder,
-        codec::make_encoder,
-    );
+    for (id, impl_name) in [
+        (codec::SRT_CODEC_ID, "subrip_sw"),
+        (codec::WEBVTT_CODEC_ID, "webvtt_sw"),
+    ] {
+        reg.register(
+            CodecInfo::new(CodecId::new(id))
+                .capabilities(subtitle_caps(impl_name))
+                .decoder(codec::make_decoder)
+                .encoder(codec::make_encoder),
+        );
+    }
 
     // Per-format factories for the rest.
-    reg.register_both(
-        CodecId::new(microdvd::CODEC_ID),
-        subtitle_caps("microdvd_sw"),
-        microdvd::make_decoder,
-        microdvd::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(mpl2::CODEC_ID),
-        subtitle_caps("mpl2_sw"),
-        mpl2::make_decoder,
-        mpl2::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(mpsub::CODEC_ID),
-        subtitle_caps("mpsub_sw"),
-        mpsub::make_decoder,
-        mpsub::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(vplayer::CODEC_ID),
-        subtitle_caps("vplayer_sw"),
-        vplayer::make_decoder,
-        vplayer::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(pjs::CODEC_ID),
-        subtitle_caps("pjs_sw"),
-        pjs::make_decoder,
-        pjs::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(aqtitle::CODEC_ID),
-        subtitle_caps("aqtitle_sw"),
-        aqtitle::make_decoder,
-        aqtitle::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(jacosub::CODEC_ID),
-        subtitle_caps("jacosub_sw"),
-        jacosub::make_decoder,
-        jacosub::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(realtext::CODEC_ID),
-        subtitle_caps("realtext_sw"),
-        realtext::make_decoder,
-        realtext::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(subviewer1::CODEC_ID),
-        subtitle_caps("subviewer1_sw"),
-        subviewer1::make_decoder,
-        subviewer1::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(subviewer2::CODEC_ID),
-        subtitle_caps("subviewer2_sw"),
-        subviewer2::make_decoder,
-        subviewer2::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(ttml::CODEC_ID),
-        subtitle_caps("ttml_sw"),
-        ttml::make_decoder,
-        ttml::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(sami::CODEC_ID),
-        subtitle_caps("sami_sw"),
-        sami::make_decoder,
-        sami::make_encoder,
-    );
-    reg.register_both(
-        CodecId::new(ebu_stl::CODEC_ID),
-        subtitle_caps("ebu_stl_sw"),
-        ebu_stl::make_decoder,
-        ebu_stl::make_encoder,
-    );
+    macro_rules! register_text {
+        ($module:ident, $impl_name:literal) => {
+            reg.register(
+                CodecInfo::new(CodecId::new($module::CODEC_ID))
+                    .capabilities(subtitle_caps($impl_name))
+                    .decoder($module::make_decoder)
+                    .encoder($module::make_encoder),
+            );
+        };
+    }
+    register_text!(microdvd, "microdvd_sw");
+    register_text!(mpl2, "mpl2_sw");
+    register_text!(mpsub, "mpsub_sw");
+    register_text!(vplayer, "vplayer_sw");
+    register_text!(pjs, "pjs_sw");
+    register_text!(aqtitle, "aqtitle_sw");
+    register_text!(jacosub, "jacosub_sw");
+    register_text!(realtext, "realtext_sw");
+    register_text!(subviewer1, "subviewer1_sw");
+    register_text!(subviewer2, "subviewer2_sw");
+    register_text!(ttml, "ttml_sw");
+    register_text!(sami, "sami_sw");
+    register_text!(ebu_stl, "ebu_stl_sw");
 }
 
 /// Register the text subtitle containers (demuxers + muxers + probes).
