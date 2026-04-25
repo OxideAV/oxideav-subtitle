@@ -49,7 +49,7 @@ fn demuxer_yields_one_packet_per_cue() {
 #[test]
 fn mux_srt_reemits_cues() {
     use oxideav_core::CodecRegistry;
-    use oxideav_core::{CodecId, CodecParameters, Frame, MediaType};
+    use oxideav_core::{CodecId, CodecParameters, Frame};
 
     let mut codecs = CodecRegistry::new();
     oxideav_subtitle::register_codecs(&mut codecs);
@@ -83,19 +83,7 @@ fn mux_srt_reemits_cues() {
     drop(mux);
 
     // Decode packets through the codec for good measure.
-    let dec_params = CodecParameters {
-        codec_id: CodecId::new("subrip"),
-        media_type: MediaType::Subtitle,
-        sample_rate: None,
-        channels: None,
-        sample_format: None,
-        width: None,
-        height: None,
-        pixel_format: None,
-        frame_rate: None,
-        extradata: Vec::new(),
-        bit_rate: None,
-    };
+    let dec_params = CodecParameters::subtitle(CodecId::new("subrip"));
     let mut dec = codecs.make_decoder(&dec_params).unwrap();
     dec.send_packet(&packets[0]).unwrap();
     let f = dec.receive_frame().unwrap();
