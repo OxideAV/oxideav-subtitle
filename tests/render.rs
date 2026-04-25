@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use oxideav_codec::Decoder;
+use oxideav_core::Decoder;
 use oxideav_core::{CodecId, Error, Frame, Packet, PixelFormat, Result, Segment, SubtitleCue};
 use oxideav_subtitle::{make_rendered_decoder, Compositor, RenderedSubtitleDecoder};
 

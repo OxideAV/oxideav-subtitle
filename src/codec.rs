@@ -8,8 +8,8 @@
 
 use std::collections::VecDeque;
 
-use oxideav_codec::{Decoder, Encoder};
 use oxideav_core::{CodecId, CodecParameters, Error, Frame, MediaType, Packet, Result, TimeBase};
+use oxideav_core::{Decoder, Encoder};
 
 use crate::{srt, webvtt};
 

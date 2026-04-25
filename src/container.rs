@@ -22,10 +22,10 @@
 use std::collections::VecDeque;
 use std::io::{Read, SeekFrom, Write};
 
-use oxideav_container::{ContainerRegistry, Demuxer, Muxer, ProbeData, ReadSeek, WriteSeek};
 use oxideav_core::{
     CodecId, CodecParameters, CodecResolver, Error, MediaType, Packet, Result, StreamInfo, TimeBase,
 };
+use oxideav_core::{ContainerRegistry, Demuxer, Muxer, ProbeData, ReadSeek, WriteSeek};
 
 use crate::ir::SubtitleTrack;
 use crate::{

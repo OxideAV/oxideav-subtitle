@@ -71,9 +71,9 @@ pub mod ttml;
 pub mod vplayer;
 pub mod webvtt;
 
-use oxideav_codec::{CodecInfo, CodecRegistry};
-use oxideav_container::ContainerRegistry;
+use oxideav_core::ContainerRegistry;
 use oxideav_core::{CodecCapabilities, CodecId, MediaType};
+use oxideav_core::{CodecInfo, CodecRegistry};
 
 pub use compositor::Compositor;
 pub use font::BitmapFont;

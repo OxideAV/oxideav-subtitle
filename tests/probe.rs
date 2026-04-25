@@ -2,7 +2,7 @@
 
 use std::io::Cursor;
 
-use oxideav_container::ContainerRegistry;
+use oxideav_core::ContainerRegistry;
 
 fn make_registry() -> ContainerRegistry {
     let mut reg = ContainerRegistry::new();
@@ -48,7 +48,7 @@ fn demuxer_yields_one_packet_per_cue() {
 
 #[test]
 fn mux_srt_reemits_cues() {
-    use oxideav_codec::CodecRegistry;
+    use oxideav_core::CodecRegistry;
     use oxideav_core::{CodecId, CodecParameters, Frame, MediaType};
 
     let mut codecs = CodecRegistry::new();

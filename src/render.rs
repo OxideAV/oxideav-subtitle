@@ -22,7 +22,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use oxideav_codec::Decoder;
+use oxideav_core::Decoder;
 use oxideav_core::{
     CodecId, CuePosition, Error, Frame, Packet, PixelFormat, Result, Segment, SubtitleCue,
     TextAlign, TimeBase, VideoFrame, VideoPlane,

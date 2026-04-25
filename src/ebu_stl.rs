@@ -223,13 +223,13 @@ pub fn looks_like_ebu_stl(buf: &[u8]) -> u8 {
 
 pub fn make_decoder(
     params: &oxideav_core::CodecParameters,
-) -> Result<Box<dyn oxideav_codec::Decoder>> {
+) -> Result<Box<dyn oxideav_core::Decoder>> {
     crate::codec::make_decoder(params)
 }
 
 pub fn make_encoder(
     params: &oxideav_core::CodecParameters,
-) -> Result<Box<dyn oxideav_codec::Encoder>> {
+) -> Result<Box<dyn oxideav_core::Encoder>> {
     crate::codec::make_encoder(params)
 }
 

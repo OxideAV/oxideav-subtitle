@@ -170,14 +170,14 @@ pub fn looks_like_ttml(buf: &[u8]) -> u8 {
 /// the caller hasn't plugged the codec switch yet.
 pub fn make_decoder(
     params: &oxideav_core::CodecParameters,
-) -> Result<Box<dyn oxideav_codec::Decoder>> {
+) -> Result<Box<dyn oxideav_core::Decoder>> {
     crate::codec::make_decoder(params)
 }
 
 /// Encoder factory — same shape as [`make_decoder`].
 pub fn make_encoder(
     params: &oxideav_core::CodecParameters,
-) -> Result<Box<dyn oxideav_codec::Encoder>> {
+) -> Result<Box<dyn oxideav_core::Encoder>> {
     crate::codec::make_encoder(params)
 }
 
