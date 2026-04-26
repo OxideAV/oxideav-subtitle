@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use oxideav_core::Decoder;
-use oxideav_core::{CodecId, Error, Frame, Packet, PixelFormat, Result, Segment, SubtitleCue};
+use oxideav_core::{CodecId, Error, Frame, Packet, Result, Segment, SubtitleCue};
 use oxideav_subtitle::{make_rendered_decoder, Compositor, RenderedSubtitleDecoder};
 
 fn mkcue(segs: Vec<Segment>) -> SubtitleCue {
@@ -204,9 +204,6 @@ fn wrapper_deduplicates_identical_cues() {
     // First call: fresh cue → Frame::Video.
     match wrapper.receive_frame() {
         Ok(Frame::Video(vf)) => {
-            assert_eq!(vf.format, PixelFormat::Rgba);
-            assert_eq!(vf.width, 160);
-            assert_eq!(vf.height, 120);
             assert_eq!(vf.pts, Some(1_000_000));
             assert_eq!(vf.planes.len(), 1);
             assert_eq!(vf.planes[0].stride, 160 * 4);

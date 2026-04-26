@@ -24,8 +24,8 @@ use std::hash::{Hash, Hasher};
 
 use oxideav_core::Decoder;
 use oxideav_core::{
-    CodecId, CuePosition, Error, Frame, Packet, PixelFormat, Result, Segment, SubtitleCue,
-    TextAlign, TimeBase, VideoFrame, VideoPlane,
+    CodecId, CuePosition, Error, Frame, Packet, Result, Segment, SubtitleCue, TextAlign,
+    VideoFrame, VideoPlane,
 };
 
 use crate::compositor::Compositor;
@@ -108,11 +108,7 @@ fn render_cue_to_video_frame(cue: &SubtitleCue, comp: &Compositor) -> VideoFrame
     let duration = (cue.end_us - cue.start_us).max(0);
     let _ = duration; // duration is currently carried on packets, not frames.
     VideoFrame {
-        format: PixelFormat::Rgba,
-        width: comp.width,
-        height: comp.height,
         pts: Some(cue.start_us),
-        time_base: TimeBase::new(1, 1_000_000),
         planes: vec![VideoPlane { stride, data: rgba }],
     }
 }
