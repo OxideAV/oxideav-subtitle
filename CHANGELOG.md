@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/OxideAV/oxideav-subtitle/compare/v0.0.4...v0.0.5) - 2026-05-03
+
+### Other
+
+- replace never-match regex with semver_check = false
+- drop nested [workspace] + [patch.crates-io] (umbrella sweep)
+- optional oxideav-scribe TTF rendering path
+- migrate to centralized OxideAV/.github reusable workflows
+- adopt slim VideoFrame shape
+- pin release-plz to patch-only bumps
+
 ### Added
 
 - `Compositor::with_face` (and `set_face` / `clear_face` / `has_face`)
