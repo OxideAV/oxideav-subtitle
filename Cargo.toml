@@ -15,7 +15,7 @@ categories = ["multimedia", "parser-implementations"]
 
 [dependencies]
 oxideav-core = "0.1"
-oxideav-scribe = "0.0"
+oxideav-scribe = "0.1"
 oxideav-pixfmt = "0.1"
 
 [dev-dependencies]
