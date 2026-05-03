@@ -4,7 +4,9 @@ use std::collections::VecDeque;
 
 use oxideav_core::Decoder;
 use oxideav_core::{CodecId, Error, Frame, Packet, Result, Segment, SubtitleCue};
-use oxideav_subtitle::{make_rendered_decoder, Compositor, RenderedSubtitleDecoder};
+use oxideav_subtitle::{
+    make_rendered_decoder, make_rendered_decoder_with_face, Compositor, RenderedSubtitleDecoder,
+};
 
 fn mkcue(segs: Vec<Segment>) -> SubtitleCue {
     SubtitleCue {
@@ -242,4 +244,106 @@ fn make_rendered_decoder_factory() {
     let inner: Box<dyn Decoder> = Box::new(CannedDecoder::new(vec![Frame::Subtitle(cue)]));
     let mut wrapper = make_rendered_decoder(inner, 64, 64);
     assert!(matches!(wrapper.receive_frame(), Ok(Frame::Video(_))));
+}
+
+// ------------------------------------------------------------------
+// Scribe TTF back-end integration
+// ------------------------------------------------------------------
+
+/// The DejaVu fixture lives under the sibling `oxideav-ttf` crate.
+/// Tests that need it skip silently if the file isn't present (e.g.
+/// when this crate is built outside the monorepo).
+fn try_load_dejavu() -> Option<oxideav_scribe::Face> {
+    let bytes = std::fs::read("../oxideav-ttf/tests/fixtures/DejaVuSans.ttf").ok()?;
+    oxideav_scribe::Face::from_ttf_bytes(bytes).ok()
+}
+
+#[test]
+fn scribe_path_compositor_renders_lit_pixels() {
+    let face = match try_load_dejavu() {
+        Some(f) => f,
+        None => return,
+    };
+    let mut comp = Compositor::with_face(640, 480, face);
+    comp.font_size_px = 28.0;
+    let cue = mkcue(vec![Segment::Text("Hello, world!".into())]);
+    let buf = comp.render(&cue);
+    assert_eq!(buf.len(), 640 * 480 * 4);
+
+    let (min_x, min_y, max_x, max_y) =
+        bounding_box(&buf, 640, 480).expect("Scribe path produced no lit pixels");
+    // Lower half of canvas (bottom-stack default).
+    assert!(
+        min_y > 240,
+        "Scribe text should be in bottom half; got y={min_y}..{max_y}"
+    );
+    // Centred horizontally — bbox should straddle the centre column.
+    assert!(
+        min_x < 320 && max_x > 320,
+        "Scribe text should straddle horizontal centre; bbox x={min_x}..{max_x}"
+    );
+    // Upper third has zero lit pixels.
+    for y in 0..160 {
+        for x in 0..640 {
+            assert_eq!(
+                rgba_alpha(&buf, 640, x, y),
+                0,
+                "unexpected lit pixel at ({x}, {y}) in upper region"
+            );
+        }
+    }
+}
+
+#[test]
+fn scribe_path_via_rendered_decoder_with_face() {
+    let face = match try_load_dejavu() {
+        Some(f) => f,
+        None => return,
+    };
+    let cue = mkcue(vec![Segment::Text("Subtitle".into())]);
+    let inner = Box::new(CannedDecoder::new(vec![Frame::Subtitle(cue)]));
+    let mut wrapper = RenderedSubtitleDecoder::new(inner, 320, 200).with_face(face);
+    match wrapper.receive_frame() {
+        Ok(Frame::Video(vf)) => {
+            assert_eq!(vf.planes.len(), 1);
+            assert_eq!(vf.planes[0].stride, 320 * 4);
+            assert_eq!(vf.planes[0].data.len(), 320 * 200 * 4);
+            let lit = vf.planes[0].data.chunks(4).filter(|p| p[3] > 0).count();
+            assert!(lit > 0, "Scribe-backed wrapper produced no lit pixels");
+        }
+        other => panic!("expected Frame::Video; got {other:?}"),
+    }
+}
+
+#[test]
+fn scribe_factory_with_face_works() {
+    let face = match try_load_dejavu() {
+        Some(f) => f,
+        None => return,
+    };
+    let cue = mkcue(vec![Segment::Text("F".into())]);
+    let inner: Box<dyn Decoder> = Box::new(CannedDecoder::new(vec![Frame::Subtitle(cue)]));
+    let mut wrapper = make_rendered_decoder_with_face(inner, 96, 64, face);
+    assert!(matches!(wrapper.receive_frame(), Ok(Frame::Video(_))));
+}
+
+#[test]
+fn scribe_and_bitmap_paths_both_produce_lit_pixels_for_same_cue() {
+    // Sanity: each back-end produces *some* output for the same cue,
+    // and both place it in the bottom half. We don't assert byte-equal
+    // bitmaps because the rasterisers are intentionally different.
+    let cue = mkcue(vec![Segment::Text("Hi".into())]);
+    let bitmap_buf = Compositor::new(160, 120).render(&cue);
+    let bitmap_lit = bitmap_buf.chunks(4).filter(|p| p[3] > 0).count();
+    assert!(bitmap_lit > 0, "bitmap path produced no pixels");
+
+    let face = match try_load_dejavu() {
+        Some(f) => f,
+        None => return,
+    };
+    let mut comp = Compositor::with_face(160, 120, face);
+    comp.font_size_px = 16.0;
+    let scribe_buf = comp.render(&cue);
+    let scribe_lit = scribe_buf.chunks(4).filter(|p| p[3] > 0).count();
+    assert!(scribe_lit > 0, "scribe path produced no pixels");
 }

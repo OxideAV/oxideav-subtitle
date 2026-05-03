@@ -1,7 +1,17 @@
 //! Subtitle compositor: turns a [`SubtitleCue`] into an RGBA bitmap
 //! suitable for compositing as a video plane.
 //!
-//! Pipeline:
+//! Two render back-ends are supported:
+//!
+//! * **Bitmap font** (default) — the embedded 8×16 face from
+//!   [`crate::font::BitmapFont`]. No external assets, no TTF parsing,
+//!   always available. Use [`Compositor::new`].
+//! * **TrueType font via `oxideav-scribe`** — anti-aliased, properly
+//!   shaped glyphs from a real TTF face (kerning, ligatures, full
+//!   Unicode `cmap`). Use [`Compositor::with_face`] passing an
+//!   `oxideav_scribe::Face` constructed from a `.ttf` byte slice.
+//!
+//! Pipeline (bitmap-font path):
 //!
 //! 1. Walk the segment tree, flattening it into a stream of styled runs
 //!    (text, face, italic, color).
@@ -16,14 +26,33 @@
 //!    Italic renders via a per-row horizontal shear of `cell_w / 4`
 //!    pixels across the glyph height.
 //!
+//! Pipeline (Scribe TTF path):
+//!
+//! 1. Flatten the segment tree to a single text string per cue
+//!    (line-breaks preserved as `\n`).
+//! 2. Hand the string to
+//!    [`oxideav_scribe::render_text_wrapped`] — Scribe runs its own
+//!    shaper + word-wrap, returning one straight-alpha
+//!    [`RgbaBitmap`](oxideav_scribe::RgbaBitmap) per output line.
+//! 3. Stack the resulting line bitmaps bottom-up, honouring
+//!    `bottom_margin_px`, and alpha-composite each onto the canvas
+//!    using straight-alpha "over". Outline / italic / per-run colours
+//!    are documented round-2 work; round 1 uses
+//!    `default_color` for the whole cue.
+//!
 //! The output is always a fresh RGBA `Vec<u8>` of size `width*height*4`,
 //! starting zeroed (fully transparent). A paired [`Compositor::render_into`]
 //! reuses a caller-provided buffer.
 //!
 //! Intentional non-features (left for later):
 //!
-//! * No TrueType shaping — we use the embedded 8×16 bitmap font only.
-//! * No CJK, no BiDi, no combining marks beyond Latin-1 precomposed.
+//! * Bitmap-font path: no TrueType shaping; no CJK; no BiDi; no
+//!   combining marks beyond Latin-1 precomposed.
+//! * Scribe path (round 1): no synthesised italic — runs marked italic
+//!   render upright (round 2 will pass an italic Face or shear-fake);
+//!   no font-fallback chain — `Segment::Font.family` is ignored, the
+//!   single Compositor face is always used; no per-run colour
+//!   override (one cue, one colour); no outline drawing.
 //! * No animation / karaoke timing (the Karaoke segment is rendered as
 //!   plain text).
 //! * No absolute positioning (ASS `\pos`, WebVTT `x%,y%`). Everything
@@ -33,13 +62,16 @@ use oxideav_core::{Segment, SubtitleCue, TextAlign};
 
 use crate::font::BitmapFont;
 
-/// Bottom-centered, bitmap-font subtitle renderer.
+/// Bottom-centered subtitle renderer.
+///
+/// Defaults to the embedded bitmap font; call [`Compositor::with_face`]
+/// to substitute a Scribe TTF face for high-quality anti-aliased text.
 pub struct Compositor {
     pub width: u32,
     pub height: u32,
     /// Default foreground RGBA. Runs without an explicit `Color` use this.
     pub default_color: [u8; 4],
-    /// Outline RGBA drawn underneath every glyph.
+    /// Outline RGBA drawn underneath every glyph (bitmap-font path only).
     pub outline_color: [u8; 4],
     /// Distance between baselines of consecutive lines, in pixels.
     pub line_height_px: u32,
@@ -47,10 +79,21 @@ pub struct Compositor {
     /// the last line.
     pub bottom_margin_px: u32,
     /// Outline thickness (0..=2). Larger values are clamped in `render`.
+    /// Only honoured by the bitmap-font path.
     pub outline_px: u32,
+    /// Nominal font size in pixels for the Scribe TTF path. Ignored on
+    /// the bitmap-font path (the bitmap face has a fixed cell size).
+    pub font_size_px: f32,
+    /// Optional TrueType face. When set, [`Compositor::render_into`]
+    /// switches to the Scribe rasterise + alpha-composite back-end;
+    /// when `None`, the bitmap-font path is used.
+    face: Option<oxideav_scribe::Face>,
 }
 
 impl Compositor {
+    /// Construct a Compositor that renders via the embedded 8×16
+    /// bitmap font. The bitmap path has no external dependencies and
+    /// always produces output, but is unscaled and ASCII / Latin-1 only.
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,
@@ -60,7 +103,36 @@ impl Compositor {
             line_height_px: 20,
             bottom_margin_px: 24,
             outline_px: 1,
+            font_size_px: 20.0,
+            face: None,
         }
+    }
+
+    /// Construct a Compositor that renders via the supplied
+    /// `oxideav_scribe::Face`. Glyphs are TrueType-shaped (kerning,
+    /// ligatures), anti-aliased, and composited with straight-alpha
+    /// over. The bitmap-font path remains available — drop the face
+    /// with [`Compositor::clear_face`] to revert.
+    pub fn with_face(width: u32, height: u32, face: oxideav_scribe::Face) -> Self {
+        let mut comp = Self::new(width, height);
+        comp.face = Some(face);
+        comp
+    }
+
+    /// Replace the active face. Pass `None` to fall back to the bitmap
+    /// font.
+    pub fn set_face(&mut self, face: Option<oxideav_scribe::Face>) {
+        self.face = face;
+    }
+
+    /// Drop the active face and revert to the bitmap-font path.
+    pub fn clear_face(&mut self) {
+        self.face = None;
+    }
+
+    /// True when the Scribe TTF path is active.
+    pub fn has_face(&self) -> bool {
+        self.face.is_some()
     }
 
     /// Render a cue into a freshly-allocated RGBA buffer of
@@ -84,6 +156,22 @@ impl Compositor {
             *b = 0;
         }
 
+        // Honour cue-level alignment. Default: Center.
+        let align = cue
+            .positioning
+            .as_ref()
+            .map(|p| p.align)
+            .unwrap_or(TextAlign::Center);
+
+        // Branch on render back-end.
+        if let Some(face) = self.face.as_ref() {
+            self.render_into_scribe(face, cue, dst, align);
+        } else {
+            self.render_into_bitmap(cue, dst, align);
+        }
+    }
+
+    fn render_into_bitmap(&self, cue: &SubtitleCue, dst: &mut [u8], align: TextAlign) {
         // 1. Flatten segments into runs.
         let runs = flatten_segments(&cue.segments, RunStyle::default_with(self.default_color));
 
@@ -107,13 +195,6 @@ impl Compositor {
             .saturating_sub((cell_h - bearing_y).min(cell_h));
         let last_baseline = last_baseline as i32;
 
-        // Honour cue-level alignment. Default: Center.
-        let align = cue
-            .positioning
-            .as_ref()
-            .map(|p| p.align)
-            .unwrap_or(TextAlign::Center);
-
         // 4. Blit each line.
         let n_lines = lines.len();
         for (i, line) in lines.iter().enumerate() {
@@ -125,6 +206,87 @@ impl Compositor {
                 TextAlign::Center => (self.width as i32 - line_width_px) / 2,
             };
             self.draw_line(line, dst, x, baseline, outline);
+        }
+    }
+
+    fn render_into_scribe(
+        &self,
+        face: &oxideav_scribe::Face,
+        cue: &SubtitleCue,
+        dst: &mut [u8],
+        align: TextAlign,
+    ) {
+        // 1. Flatten the segment tree to a single text string. Round 1
+        //    ignores per-run colour / italic / face; the whole cue
+        //    renders in `default_color` upright in the supplied face.
+        let text = flatten_to_text(&cue.segments);
+        if text.is_empty() {
+            return;
+        }
+
+        // 2. Hand off to scribe for shaping + word-wrap. Reserve a
+        //    side-margin (8 px each side) so glyphs aren't flush
+        //    against the canvas edge.
+        let side_margin: u32 = 8;
+        let max_text_w = self.width.saturating_sub(side_margin * 2);
+        if max_text_w == 0 {
+            return;
+        }
+        let size_px = if self.font_size_px.is_finite() && self.font_size_px > 0.0 {
+            self.font_size_px
+        } else {
+            20.0
+        };
+        let line_bitmaps = match oxideav_scribe::render_text_wrapped(
+            face,
+            &text,
+            size_px,
+            self.default_color,
+            max_text_w as f32,
+        ) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        if line_bitmaps.is_empty() {
+            return;
+        }
+
+        // 3. Vertical layout — stack from the bottom up. Use the
+        //    user-configured line height when it exceeds the face's
+        //    natural one; otherwise honour the face metric so descenders
+        //    don't stomp the next line.
+        let face_line_h = face.line_height_px(size_px).ceil() as u32;
+        let line_h = self.line_height_px.max(face_line_h.max(1));
+
+        let n_lines = line_bitmaps.len();
+        // The bottom edge of the last (lowest) line bitmap.
+        let last_bottom = self.height.saturating_sub(self.bottom_margin_px);
+
+        for (i, line_bm) in line_bitmaps.iter().enumerate() {
+            if line_bm.is_empty() {
+                continue;
+            }
+            // Bottom of this particular line.
+            let line_bottom = last_bottom.saturating_sub(((n_lines - 1 - i) as u32) * line_h);
+            let y = line_bottom as i32 - line_bm.height as i32;
+            let line_w = line_bm.width as i32;
+            let x = match align {
+                TextAlign::Left | TextAlign::Start => side_margin as i32,
+                TextAlign::Right | TextAlign::End => {
+                    self.width as i32 - line_w - side_margin as i32
+                }
+                TextAlign::Center => (self.width as i32 - line_w) / 2,
+            };
+            blit_rgba_straight(
+                dst,
+                self.width,
+                self.height,
+                x,
+                y,
+                &line_bm.data,
+                line_bm.width,
+                line_bm.height,
+            );
         }
     }
 
@@ -178,6 +340,97 @@ impl Compositor {
                 );
                 x += font.cell_w as i32;
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scribe back-end helpers
+// ---------------------------------------------------------------------------
+
+/// Walk the segment tree and flatten it into a single plain string.
+/// Style information is discarded — round 1 of the Scribe path renders
+/// the whole cue in one colour / one face. Round 2 will revisit this to
+/// emit one shaped run per style change and composite them with their
+/// respective colours.
+fn flatten_to_text(segments: &[Segment]) -> String {
+    let mut out = String::new();
+    walk_text(segments, &mut out);
+    out
+}
+
+fn walk_text(segments: &[Segment], out: &mut String) {
+    for seg in segments {
+        match seg {
+            Segment::Text(s) | Segment::Raw(s) => out.push_str(s),
+            Segment::LineBreak => out.push('\n'),
+            Segment::Bold(c)
+            | Segment::Italic(c)
+            | Segment::Underline(c)
+            | Segment::Strike(c)
+            | Segment::Color { children: c, .. }
+            | Segment::Font { children: c, .. }
+            | Segment::Class { children: c, .. }
+            | Segment::Karaoke { children: c, .. } => walk_text(c, out),
+            Segment::Voice { name, children } => {
+                out.push_str(name);
+                out.push_str(": ");
+                walk_text(children, out);
+            }
+            Segment::Timestamp { .. } => {
+                // Invisible — emits no characters.
+            }
+        }
+    }
+}
+
+/// Composite a straight-alpha RGBA8 source bitmap onto a straight-alpha
+/// RGBA8 destination at `(x, y)` (top-left). Pixels outside the
+/// destination rectangle are clipped. Blend is Porter-Duff "over" via
+/// [`oxideav_pixfmt::over_straight`].
+#[allow(clippy::too_many_arguments)]
+fn blit_rgba_straight(
+    dst: &mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+    x: i32,
+    y: i32,
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+) {
+    if dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0 {
+        return;
+    }
+    let dx0 = x.max(0);
+    let dy0 = y.max(0);
+    let dx1 = (x + src_w as i32).min(dst_w as i32);
+    let dy1 = (y + src_h as i32).min(dst_h as i32);
+    if dx0 >= dx1 || dy0 >= dy1 {
+        return;
+    }
+    let sx0 = (dx0 - x) as usize;
+    let sy0 = (dy0 - y) as usize;
+    let blit_w = (dx1 - dx0) as usize;
+    let blit_h = (dy1 - dy0) as usize;
+    let dst_stride = dst_w as usize * 4;
+    let src_stride = src_w as usize * 4;
+    for row in 0..blit_h {
+        let dst_row_off = (dy0 as usize + row) * dst_stride + (dx0 as usize) * 4;
+        let src_row_off = (sy0 + row) * src_stride + sx0 * 4;
+        for col in 0..blit_w {
+            let so = src_row_off + col * 4;
+            let s = [src[so], src[so + 1], src[so + 2], src[so + 3]];
+            if s[3] == 0 {
+                continue;
+            }
+            let dop = dst_row_off + col * 4;
+            let d = [dst[dop], dst[dop + 1], dst[dop + 2], dst[dop + 3]];
+            let out = oxideav_pixfmt::over_straight(s, d);
+            dst[dop] = out[0];
+            dst[dop + 1] = out[1];
+            dst[dop + 2] = out[2];
+            dst[dop + 3] = out[3];
         }
     }
 }
@@ -540,5 +793,57 @@ mod tests {
         let cue = make_cue(vec![]);
         let buf = comp.render(&cue);
         assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn flatten_to_text_walks_segments() {
+        // Bold("Hi") + " " + Italic("there") + LineBreak + Voice("J", "yo")
+        let segs = vec![
+            Segment::Bold(vec![Segment::Text("Hi".into())]),
+            Segment::Text(" ".into()),
+            Segment::Italic(vec![Segment::Text("there".into())]),
+            Segment::LineBreak,
+            Segment::Voice {
+                name: "J".into(),
+                children: vec![Segment::Text("yo".into())],
+            },
+        ];
+        let txt = flatten_to_text(&segs);
+        assert_eq!(txt, "Hi there\nJ: yo");
+    }
+
+    #[test]
+    fn no_face_means_bitmap_path() {
+        let comp = Compositor::new(160, 80);
+        assert!(!comp.has_face());
+    }
+
+    /// Smoke test: a Compositor built `with_face` from the DejaVu fixture
+    /// renders some lit pixels for a simple cue.
+    #[test]
+    fn scribe_path_renders_text() {
+        let bytes = match std::fs::read("../oxideav-ttf/tests/fixtures/DejaVuSans.ttf") {
+            Ok(b) => b,
+            Err(_) => return, // fixture missing — skip
+        };
+        let face =
+            oxideav_scribe::Face::from_ttf_bytes(bytes).expect("failed to parse DejaVuSans.ttf");
+        let mut comp = Compositor::with_face(320, 240, face);
+        comp.font_size_px = 24.0;
+        assert!(comp.has_face());
+        let cue = make_cue(vec![Segment::Text("Hello".into())]);
+        let buf = comp.render(&cue);
+        assert_eq!(buf.len(), 320 * 240 * 4);
+        let lit = buf.chunks(4).filter(|p| p[3] > 0).count();
+        assert!(lit > 0, "scribe path produced no lit pixels");
+        // Lit pixels must sit in the lower half of the canvas (bottom-stack).
+        let lit_lower = (0..buf.len() / 4)
+            .filter(|i| buf[i * 4 + 3] > 0)
+            .filter(|i| (i / 320) >= 120)
+            .count();
+        assert!(
+            lit_lower > 0,
+            "no lit pixels in lower half of canvas; got {lit} lit total"
+        );
     }
 }

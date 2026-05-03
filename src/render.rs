@@ -50,8 +50,18 @@ impl RenderedSubtitleDecoder {
         }
     }
 
+    /// Builder: switch the inner Compositor to the Scribe TTF
+    /// back-end using `face`. Discards any previously-set face.
+    /// Combine with [`Self::compositor_mut`] to tune `font_size_px`,
+    /// margins, etc.
+    pub fn with_face(mut self, face: oxideav_scribe::Face) -> Self {
+        self.compositor.set_face(Some(face));
+        self
+    }
+
     /// Mutable access to the underlying compositor. Use this to tune
-    /// colours, margin, or outline width before the first frame.
+    /// colours, margin, outline width, or to swap the active TTF face
+    /// before the first frame.
     pub fn compositor_mut(&mut self) -> &mut Compositor {
         &mut self.compositor
     }
@@ -97,9 +107,21 @@ impl Decoder for RenderedSubtitleDecoder {
 }
 
 /// Factory: wrap an existing subtitle decoder in a RenderedSubtitleDecoder
-/// at the given output resolution.
+/// at the given output resolution. Uses the embedded bitmap-font path.
 pub fn make_rendered_decoder(inner: Box<dyn Decoder>, width: u32, height: u32) -> Box<dyn Decoder> {
     Box::new(RenderedSubtitleDecoder::new(inner, width, height))
+}
+
+/// Factory: wrap an existing subtitle decoder and configure it to use
+/// the Scribe TTF back-end with `face`. Equivalent to
+/// `RenderedSubtitleDecoder::new(...).with_face(face)`.
+pub fn make_rendered_decoder_with_face(
+    inner: Box<dyn Decoder>,
+    width: u32,
+    height: u32,
+    face: oxideav_scribe::Face,
+) -> Box<dyn Decoder> {
+    Box::new(RenderedSubtitleDecoder::new(inner, width, height).with_face(face))
 }
 
 fn render_cue_to_video_frame(cue: &SubtitleCue, comp: &Compositor) -> VideoFrame {

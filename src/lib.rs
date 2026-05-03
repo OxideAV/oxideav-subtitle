@@ -78,7 +78,7 @@ use oxideav_core::{CodecInfo, CodecRegistry};
 pub use compositor::Compositor;
 pub use font::BitmapFont;
 pub use ir::{SourceFormat, SubtitleTrack};
-pub use render::{make_rendered_decoder, RenderedSubtitleDecoder};
+pub use render::{make_rendered_decoder, make_rendered_decoder_with_face, RenderedSubtitleDecoder};
 pub use transform::{srt_to_webvtt, webvtt_to_srt};
 
 /// Shape a shared capability set for a subtitle codec. Every text
