@@ -17,22 +17,6 @@ categories = ["multimedia", "parser-implementations"]
 oxideav-core = "0.1"
 oxideav-scribe = "0.0"
 oxideav-pixfmt = "0.1"
+
 [dev-dependencies]
 oxideav-core = "0.1"
-
-# Self-contained workspace marker so `cargo test` from inside this crate
-# does not walk up into the parent monorepo workspace (which currently
-# contains sibling crates that also declare their own [workspace] block,
-# causing cargo to error out with "multiple workspace roots"). Mirrors
-# the pattern in oxideav-dts / oxideav-indeo / oxideav-tta / oxideav-vp8 /
-# oxideav-musepack. The patch.crates-io overrides below let the
-# in-tree dependency graph resolve against sibling crates' workspace
-# directories without crates.io lookups; remove if/when oxideav-scribe
-# (currently 0.0.x, unpublished) ships a release on crates.io.
-[workspace]
-
-[patch.crates-io]
-oxideav-core = { path = "../oxideav-core" }
-oxideav-scribe = { path = "../oxideav-scribe" }
-oxideav-pixfmt = { path = "../oxideav-pixfmt" }
-oxideav-ttf = { path = "../oxideav-ttf" }
