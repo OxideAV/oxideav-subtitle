@@ -33,23 +33,33 @@ let buf = comp.render(&cue); // Vec<u8>, 640*480*4 bytes
 Uses the embedded 8×16 bitmap font (Latin-1 only). No external
 assets, no TTF parsing — always available.
 
-### TrueType path via `oxideav-scribe`
+### TrueType path via `oxideav-scribe` + `oxideav-raster`
+
+Gated behind the default-on `text` cargo feature. Disable via
+`default-features = false` to drop the scribe + raster dep tree if you
+only need the `BitmapFont` path.
 
 ```rust
 use oxideav_subtitle::Compositor;
-use oxideav_scribe::Face;
+use oxideav_scribe::{Face, FaceChain};
 
 let bytes = std::fs::read("DejaVuSans.ttf")?;
 let face  = Face::from_ttf_bytes(bytes)?;
-let mut comp = Compositor::with_face(640, 480, face);
+let chain = FaceChain::new(face); // .push_fallback(cjk).push_fallback(emoji) for fallbacks
+let mut comp = Compositor::with_face(640, 480, chain);
 comp.font_size_px = 24.0;
 let buf = comp.render(&cue);
 ```
 
-Glyphs are anti-aliased and shaped (kerning, GSUB ligatures via the
+Glyphs are anti-aliased and shaped (kerning, GSUB ligatures, face-chain
+fallback via the
 [`oxideav-scribe`](https://github.com/OxideAV/oxideav-scribe) pipeline)
-before being alpha-composited onto the canvas with straight-alpha "over"
-from [`oxideav-pixfmt`](https://github.com/OxideAV/oxideav-pixfmt).
+into vector path nodes, gathered into one `oxideav_core::VectorFrame`,
+and rasterised end-to-end by
+[`oxideav-raster`](https://github.com/OxideAV/oxideav-raster). The
+result is composited onto the canvas with straight-alpha "over" from
+[`oxideav-pixfmt`](https://github.com/OxideAV/oxideav-pixfmt). Per-run
+colour from `Segment::Color` is honoured.
 
 ### Wrapper decoder
 
@@ -57,27 +67,21 @@ from [`oxideav-pixfmt`](https://github.com/OxideAV/oxideav-pixfmt).
 use oxideav_subtitle::{make_rendered_decoder, make_rendered_decoder_with_face};
 // Bitmap-font path:
 let video_dec = make_rendered_decoder(srt_decoder, 640, 480);
-// Scribe TTF path:
-let video_dec = make_rendered_decoder_with_face(srt_decoder, 640, 480, face);
+// Scribe + Raster TTF path (requires the `text` feature):
+let video_dec = make_rendered_decoder_with_face(srt_decoder, 640, 480, chain);
 // Or builder form:
-let video_dec = RenderedSubtitleDecoder::new(srt_decoder, 640, 480).with_face(face);
+let video_dec = RenderedSubtitleDecoder::new(srt_decoder, 640, 480).with_face(chain);
 ```
 
-### Round-1 deferrals on the Scribe TTF path
+### Round-1 deferrals on the Scribe + Raster path
 
-Round-1 of the Scribe integration delivers crisp anti-aliased glyphs
-but intentionally simplifies styling. Enhancements landing in round 2:
-
-* **Italic** — runs marked italic currently render upright. Round 2
-  will accept a paired italic `Face`, and/or shear-fake one as a
-  fallback.
-* **Per-run colour** — the whole cue renders in `default_color`.
-  Round 2 will shape one Scribe run per styled segment and composite
-  each with its own `Color { rgb }`.
-* **Font-fallback chain** — `Segment::Font.family` is ignored; the
-  single Compositor face is always used. Round 2 will accept a
-  `Vec<Face>` and pick the first one whose `cmap` covers each glyph.
-* **Outline** — the bitmap-font path's outline smear isn't replicated.
+Italic / weight synthesis on runs marked italic + bold currently render
+upright/regular (they go through `Shaper::shape_to_paths`, which uses
+the upright outline; round 2 will route those through a
+`render_text_styled`-equivalent vector path or a paired italic / bold
+`Face`). `Segment::Font.family` is ignored — the explicit `FaceChain`
+the caller installed is always used. Outline smear isn't replicated on
+this path.
 
 The bitmap-font path is unaffected by these and continues to honour
 bold / italic / per-run colour as before.

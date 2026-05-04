@@ -3,13 +3,17 @@
 //!
 //! Two render back-ends are supported:
 //!
-//! * **Bitmap font** (default) — the embedded 8×16 face from
-//!   [`crate::font::BitmapFont`]. No external assets, no TTF parsing,
-//!   always available. Use [`Compositor::new`].
-//! * **TrueType font via `oxideav-scribe`** — anti-aliased, properly
-//!   shaped glyphs from a real TTF face (kerning, ligatures, full
-//!   Unicode `cmap`). Use [`Compositor::with_face`] passing an
-//!   `oxideav_scribe::Face` constructed from a `.ttf` byte slice.
+//! * **Bitmap font** (always available) — the embedded 8×16 face from
+//!   [`crate::font::BitmapFont`]. No external assets, no TTF parsing.
+//!   Use [`Compositor::new`] with no face.
+//! * **TrueType via `oxideav-scribe` + `oxideav-raster`** (gated behind
+//!   the default-on `text` cargo feature) — `oxideav-scribe` shapes
+//!   each styled run into a tree of glyph paths via
+//!   [`oxideav_scribe::Shaper::shape_to_paths`]; the resulting nodes are
+//!   placed into an [`oxideav_core::VectorFrame`] at the correct
+//!   per-line / per-glyph offsets and rasterised end-to-end by
+//!   [`oxideav_raster::Renderer`]. Use [`Compositor::with_face`] passing
+//!   a [`oxideav_scribe::FaceChain`] (single-face chains are fine).
 //!
 //! Pipeline (bitmap-font path):
 //!
@@ -26,19 +30,25 @@
 //!    Italic renders via a per-row horizontal shear of `cell_w / 4`
 //!    pixels across the glyph height.
 //!
-//! Pipeline (Scribe TTF path):
+//! Pipeline (Scribe + Raster path):
 //!
-//! 1. Flatten the segment tree to a single text string per cue
-//!    (line-breaks preserved as `\n`).
-//! 2. Hand the string to
-//!    [`oxideav_scribe::render_text_wrapped`] — Scribe runs its own
-//!    shaper + word-wrap, returning one straight-alpha
-//!    [`RgbaBitmap`](oxideav_scribe::RgbaBitmap) per output line.
-//! 3. Stack the resulting line bitmaps bottom-up, honouring
-//!    `bottom_margin_px`, and alpha-composite each onto the canvas
-//!    using straight-alpha "over". Outline / italic / per-run colours
-//!    are documented round-2 work; round 1 uses
-//!    `default_color` for the whole cue.
+//! 1. Flatten the segment tree to a stream of styled runs (same
+//!    `flatten_segments` used by the bitmap path).
+//! 2. Split into logical lines on `\n` boundaries and word-wrap each
+//!    logical line greedily so it fits within `width` — measurement uses
+//!    [`oxideav_scribe::Shaper::shape`] on per-piece text so kerning /
+//!    ligatures count toward the budget.
+//! 3. For every visual line, walk its (style, text) pieces and shape
+//!    each piece via [`oxideav_scribe::Shaper::shape_to_paths`]; wrap
+//!    every glyph node in a `Group` whose `transform` places the glyph at
+//!    `(line_x + glyph_x, line_baseline + glyph_y)` on the canvas, and
+//!    whose `fill` is repainted to the run's colour.
+//! 4. Push every wrapped glyph node into the root group of one
+//!    [`oxideav_core::VectorFrame`] sized to the canvas, then call
+//!    [`oxideav_raster::Renderer::render`] to rasterise the whole cue
+//!    in one pass. The resulting RGBA frame is straight-alpha; we
+//!    composite it onto the caller's destination buffer with
+//!    [`oxideav_pixfmt::over_straight`].
 //!
 //! The output is always a fresh RGBA `Vec<u8>` of size `width*height*4`,
 //! starting zeroed (fully transparent). A paired [`Compositor::render_into`]
@@ -48,11 +58,11 @@
 //!
 //! * Bitmap-font path: no TrueType shaping; no CJK; no BiDi; no
 //!   combining marks beyond Latin-1 precomposed.
-//! * Scribe path (round 1): no synthesised italic — runs marked italic
-//!   render upright (round 2 will pass an italic Face or shear-fake);
-//!   no font-fallback chain — `Segment::Font.family` is ignored, the
-//!   single Compositor face is always used; no per-run colour
-//!   override (one cue, one colour); no outline drawing.
+//! * Scribe + raster path: no synthesised italic on runs marked italic
+//!   (the Renderer rasterises the upright outline; round-2 will swap
+//!   to a `render_text_styled`-equivalent vector path); no font-fallback
+//!   beyond the explicit `FaceChain` the caller provides; no outline
+//!   drawing. Per-run colour IS honoured.
 //! * No animation / karaoke timing (the Karaoke segment is rendered as
 //!   plain text).
 //! * No absolute positioning (ASS `\pos`, WebVTT `x%,y%`). Everything
@@ -62,10 +72,20 @@ use oxideav_core::{Segment, SubtitleCue, TextAlign};
 
 use crate::font::BitmapFont;
 
+#[cfg(feature = "text")]
+use oxideav_core::{
+    Group, Node, Paint, PathNode, Rgba as CoreRgba, TimeBase, Transform2D, VectorFrame,
+};
+#[cfg(feature = "text")]
+use oxideav_scribe::{FaceChain, Shaper};
+
 /// Bottom-centered subtitle renderer.
 ///
 /// Defaults to the embedded bitmap font; call [`Compositor::with_face`]
-/// to substitute a Scribe TTF face for high-quality anti-aliased text.
+/// (or [`Compositor::set_face`]) to substitute a Scribe + Raster TTF
+/// back-end for high-quality anti-aliased text. The TTF path is gated
+/// behind the default-on `text` cargo feature; embedders who only need
+/// the bitmap-font path can opt out via `default-features = false`.
 pub struct Compositor {
     pub width: u32,
     pub height: u32,
@@ -81,13 +101,14 @@ pub struct Compositor {
     /// Outline thickness (0..=2). Larger values are clamped in `render`.
     /// Only honoured by the bitmap-font path.
     pub outline_px: u32,
-    /// Nominal font size in pixels for the Scribe TTF path. Ignored on
-    /// the bitmap-font path (the bitmap face has a fixed cell size).
+    /// Nominal font size in pixels for the Scribe + Raster path. Ignored
+    /// on the bitmap-font path (the bitmap face has a fixed cell size).
     pub font_size_px: f32,
-    /// Optional TrueType face. When set, [`Compositor::render_into`]
-    /// switches to the Scribe rasterise + alpha-composite back-end;
-    /// when `None`, the bitmap-font path is used.
-    face: Option<oxideav_scribe::Face>,
+    /// Optional TrueType face chain. When set (and the `text` feature is
+    /// enabled), [`Compositor::render_into`] switches to the Scribe +
+    /// Raster back-end; when `None`, the bitmap-font path is used.
+    #[cfg(feature = "text")]
+    face: Option<FaceChain>,
 }
 
 impl Compositor {
@@ -104,35 +125,55 @@ impl Compositor {
             bottom_margin_px: 24,
             outline_px: 1,
             font_size_px: 20.0,
+            #[cfg(feature = "text")]
             face: None,
         }
     }
 
     /// Construct a Compositor that renders via the supplied
-    /// `oxideav_scribe::Face`. Glyphs are TrueType-shaped (kerning,
-    /// ligatures), anti-aliased, and composited with straight-alpha
-    /// over. The bitmap-font path remains available — drop the face
-    /// with [`Compositor::clear_face`] to revert.
-    pub fn with_face(width: u32, height: u32, face: oxideav_scribe::Face) -> Self {
+    /// [`FaceChain`]. Glyphs are TrueType-shaped (kerning, ligatures,
+    /// face-chain fallback), rasterised by `oxideav-raster`'s scanline
+    /// engine, and composited with straight-alpha "over". The
+    /// bitmap-font path remains available — drop the chain with
+    /// [`Compositor::clear_face`] to revert.
+    ///
+    /// Available only when the `text` cargo feature is enabled (it is
+    /// by default).
+    #[cfg(feature = "text")]
+    pub fn with_face(width: u32, height: u32, face: FaceChain) -> Self {
         let mut comp = Self::new(width, height);
         comp.face = Some(face);
         comp
     }
 
-    /// Replace the active face. Pass `None` to fall back to the bitmap
-    /// font.
-    pub fn set_face(&mut self, face: Option<oxideav_scribe::Face>) {
+    /// Replace the active face chain. Pass `None` to fall back to the
+    /// bitmap font.
+    ///
+    /// Available only when the `text` cargo feature is enabled.
+    #[cfg(feature = "text")]
+    pub fn set_face(&mut self, face: Option<FaceChain>) {
         self.face = face;
     }
 
-    /// Drop the active face and revert to the bitmap-font path.
+    /// Drop the active face chain and revert to the bitmap-font path.
+    ///
+    /// Available only when the `text` cargo feature is enabled.
+    #[cfg(feature = "text")]
     pub fn clear_face(&mut self) {
         self.face = None;
     }
 
-    /// True when the Scribe TTF path is active.
+    /// True when the Scribe + Raster TTF path is active (i.e. a
+    /// [`FaceChain`] is set and the `text` feature is enabled).
     pub fn has_face(&self) -> bool {
-        self.face.is_some()
+        #[cfg(feature = "text")]
+        {
+            self.face.is_some()
+        }
+        #[cfg(not(feature = "text"))]
+        {
+            false
+        }
     }
 
     /// Render a cue into a freshly-allocated RGBA buffer of
@@ -164,11 +205,14 @@ impl Compositor {
             .unwrap_or(TextAlign::Center);
 
         // Branch on render back-end.
-        if let Some(face) = self.face.as_ref() {
-            self.render_into_scribe(face, cue, dst, align);
-        } else {
-            self.render_into_bitmap(cue, dst, align);
+        #[cfg(feature = "text")]
+        {
+            if let Some(face) = self.face.as_ref() {
+                self.render_into_scribe(face, cue, dst, align);
+                return;
+            }
         }
+        self.render_into_bitmap(cue, dst, align);
     }
 
     fn render_into_bitmap(&self, cue: &SubtitleCue, dst: &mut [u8], align: TextAlign) {
@@ -209,45 +253,49 @@ impl Compositor {
         }
     }
 
+    /// Scribe + Raster path. See module docs for the pipeline.
+    ///
+    /// `face` is the caller-supplied [`FaceChain`]; `cue` is the
+    /// subtitle cue to render; `dst` is the destination RGBA8
+    /// straight-alpha buffer (already zeroed by the caller); `align`
+    /// is the per-line horizontal alignment.
+    #[cfg(feature = "text")]
     fn render_into_scribe(
         &self,
-        face: &oxideav_scribe::Face,
+        face: &FaceChain,
         cue: &SubtitleCue,
         dst: &mut [u8],
         align: TextAlign,
     ) {
-        // 1. Flatten the segment tree to a single text string. Round 1
-        //    ignores per-run colour / italic / face; the whole cue
-        //    renders in `default_color` upright in the supplied face.
-        let text = flatten_to_text(&cue.segments);
-        if text.is_empty() {
+        // 1. Flatten the segment tree to per-style runs (preserves per-run
+        //    colour). The bitmap path uses the same flattener.
+        let runs = flatten_segments(&cue.segments, RunStyle::default_with(self.default_color));
+        if runs.is_empty() {
             return;
         }
 
-        // 2. Hand off to scribe for shaping + word-wrap. Reserve a
-        //    side-margin (8 px each side) so glyphs aren't flush
-        //    against the canvas edge.
-        let side_margin: u32 = 8;
-        let max_text_w = self.width.saturating_sub(side_margin * 2);
-        if max_text_w == 0 {
-            return;
-        }
         let size_px = if self.font_size_px.is_finite() && self.font_size_px > 0.0 {
             self.font_size_px
         } else {
             20.0
         };
-        let line_bitmaps = match oxideav_scribe::render_text_wrapped(
-            face,
-            &text,
-            size_px,
-            self.default_color,
-            max_text_w as f32,
-        ) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        if line_bitmaps.is_empty() {
+        let side_margin: u32 = 8;
+        let max_text_w = self.width.saturating_sub(side_margin * 2);
+        if max_text_w == 0 {
+            return;
+        }
+
+        // 2. Group runs into "logical lines" (split on \n inside a run's
+        //    text), then word-wrap each logical line into "visual lines"
+        //    that fit within `max_text_w` after shaping with the primary
+        //    face. Each visual line is a `Vec<StyledPiece>`.
+        let logical = split_logical_lines(&runs);
+        let mut visual: Vec<Vec<StyledPiece>> = Vec::new();
+        for line in logical {
+            let wrapped = wrap_logical_line(&line, face, size_px, max_text_w as f32);
+            visual.extend(wrapped);
+        }
+        if visual.is_empty() {
             return;
         }
 
@@ -255,39 +303,90 @@ impl Compositor {
         //    user-configured line height when it exceeds the face's
         //    natural one; otherwise honour the face metric so descenders
         //    don't stomp the next line.
-        let face_line_h = face.line_height_px(size_px).ceil() as u32;
+        let face_line_h = face.primary().line_height_px(size_px).ceil() as u32;
+        let face_descent_abs = (-face.primary().descent_px(size_px)).ceil().max(0.0) as u32;
         let line_h = self.line_height_px.max(face_line_h.max(1));
 
-        let n_lines = line_bitmaps.len();
-        // The bottom edge of the last (lowest) line bitmap.
-        let last_bottom = self.height.saturating_sub(self.bottom_margin_px);
+        let n_lines = visual.len();
+        // Bottom of the *last* (lowest) line: descent below baseline must
+        // sit just above the configured bottom_margin_px.
+        let last_baseline = self
+            .height
+            .saturating_sub(self.bottom_margin_px)
+            .saturating_sub(face_descent_abs);
 
-        for (i, line_bm) in line_bitmaps.iter().enumerate() {
-            if line_bm.is_empty() {
-                continue;
-            }
-            // Bottom of this particular line.
-            let line_bottom = last_bottom.saturating_sub(((n_lines - 1 - i) as u32) * line_h);
-            let y = line_bottom as i32 - line_bm.height as i32;
-            let line_w = line_bm.width as i32;
-            let x = match align {
-                TextAlign::Left | TextAlign::Start => side_margin as i32,
+        // 4. Build a VectorFrame: one root Group containing every glyph
+        //    node, pre-translated to its absolute canvas position and
+        //    repainted with its run's colour.
+        let mut root = Group::default();
+        for (i, line_pieces) in visual.iter().enumerate() {
+            // Per-line measurement: sum of piece widths (each piece's
+            // shaped run width including its own kerning).
+            let piece_widths: Vec<f32> = line_pieces
+                .iter()
+                .map(|p| measure_piece(face, &p.text, size_px))
+                .collect();
+            let line_w_px: f32 = piece_widths.iter().sum();
+
+            let line_x = match align {
+                TextAlign::Left | TextAlign::Start => side_margin as f32,
                 TextAlign::Right | TextAlign::End => {
-                    self.width as i32 - line_w - side_margin as i32
+                    (self.width as f32 - line_w_px - side_margin as f32).max(side_margin as f32)
                 }
-                TextAlign::Center => (self.width as i32 - line_w) / 2,
+                TextAlign::Center => ((self.width as f32 - line_w_px) / 2.0).max(0.0),
             };
-            blit_rgba_straight(
-                dst,
-                self.width,
-                self.height,
-                x,
-                y,
-                &line_bm.data,
-                line_bm.width,
-                line_bm.height,
-            );
+            let baseline_y =
+                last_baseline.saturating_sub(((n_lines - 1 - i) as u32) * line_h) as f32;
+            // baseline_y is the canvas y-coordinate of the glyph's pen
+            // origin. Face::glyph_node bakes size_px scale + Y-flip so
+            // glyph ink rises into negative local y from the pen origin.
+
+            let mut pen_x = line_x;
+            for (piece, piece_w) in line_pieces.iter().zip(piece_widths.iter()) {
+                if piece.text.is_empty() {
+                    continue;
+                }
+                let glyphs = Shaper::shape_to_paths(face, &piece.text, size_px);
+                let fill = Paint::Solid(rgba_to_core(piece.style.color));
+                for (_face_idx, node, glyph_xform) in glyphs {
+                    // glyph_xform = translate(target_x, y_offset) in
+                    // run-local coords. Compose with the line origin.
+                    let absolute = Transform2D::translate(pen_x, baseline_y).compose(&glyph_xform);
+                    let painted = repaint_node(node, &fill);
+                    root.children.push(Node::Group(Group {
+                        transform: absolute,
+                        children: vec![painted],
+                        ..Group::default()
+                    }));
+                }
+                pen_x += *piece_w;
+            }
         }
+
+        if root.children.is_empty() {
+            return;
+        }
+
+        // 5. Rasterise the whole scene in one pass.
+        let frame = VectorFrame {
+            width: self.width as f32,
+            height: self.height as f32,
+            view_box: None,
+            root,
+            pts: None,
+            time_base: TimeBase::new(1, 1),
+        };
+        let renderer = oxideav_raster::Renderer::new(self.width, self.height);
+        let rendered = renderer.render(&frame);
+        let plane = match rendered.planes.first() {
+            Some(p) => p,
+            None => return,
+        };
+
+        // 6. Composite the rasterised RGBA over the destination buffer
+        //    with straight-alpha "over". Renderer's output is straight
+        //    alpha, matching pixfmt::over_straight's expectation.
+        composite_straight_over(dst, &plane.data, self.width, self.height);
     }
 
     fn draw_line(&self, line: &Line, dst: &mut [u8], start_x: i32, baseline: i32, outline: u32) {
@@ -345,98 +444,243 @@ impl Compositor {
 }
 
 // ---------------------------------------------------------------------------
-// Scribe back-end helpers
+// Scribe + Raster path helpers
 // ---------------------------------------------------------------------------
 
-/// Walk the segment tree and flatten it into a single plain string.
-/// Style information is discarded — round 1 of the Scribe path renders
-/// the whole cue in one colour / one face. Round 2 will revisit this to
-/// emit one shaped run per style change and composite them with their
-/// respective colours.
-fn flatten_to_text(segments: &[Segment]) -> String {
-    let mut out = String::new();
-    walk_text(segments, &mut out);
+/// One styled piece on a visual line. The `text` is plain (no `\n`).
+#[cfg(feature = "text")]
+#[derive(Clone, Debug)]
+struct StyledPiece {
+    text: String,
+    style: RunStyle,
+}
+
+/// Split a Vec<Run> on embedded `\n` characters. Each output `Vec<Run>`
+/// is one logical line (paragraph) carrying its style breaks. Empty
+/// trailing lines are dropped.
+#[cfg(feature = "text")]
+fn split_logical_lines(runs: &[Run]) -> Vec<Vec<Run>> {
+    let mut out: Vec<Vec<Run>> = vec![Vec::new()];
+    for run in runs {
+        let mut iter = run.text.split('\n').peekable();
+        while let Some(piece) = iter.next() {
+            if !piece.is_empty() {
+                out.last_mut().unwrap().push(Run {
+                    text: piece.to_string(),
+                    style: run.style,
+                });
+            }
+            if iter.peek().is_some() {
+                out.push(Vec::new());
+            }
+        }
+    }
+    while out.last().map(|l| l.is_empty()).unwrap_or(false) {
+        out.pop();
+    }
     out
 }
 
-fn walk_text(segments: &[Segment], out: &mut String) {
-    for seg in segments {
-        match seg {
-            Segment::Text(s) | Segment::Raw(s) => out.push_str(s),
-            Segment::LineBreak => out.push('\n'),
-            Segment::Bold(c)
-            | Segment::Italic(c)
-            | Segment::Underline(c)
-            | Segment::Strike(c)
-            | Segment::Color { children: c, .. }
-            | Segment::Font { children: c, .. }
-            | Segment::Class { children: c, .. }
-            | Segment::Karaoke { children: c, .. } => walk_text(c, out),
-            Segment::Voice { name, children } => {
-                out.push_str(name);
-                out.push_str(": ");
-                walk_text(children, out);
+/// Greedy word-wrap of a logical line into one or more visual lines that
+/// each fit within `max_width` after shaping with `face`.
+///
+/// Tokenisation matches the bitmap-path `tokenise`: alternating
+/// space-runs and word-runs, each carrying the run's style. We measure
+/// each token by shaping its text via the primary face — close enough
+/// to the rendered width for greedy wrapping (the actual rendering uses
+/// the same shape on the per-piece text).
+#[cfg(feature = "text")]
+fn wrap_logical_line(
+    runs: &[Run],
+    face: &FaceChain,
+    size_px: f32,
+    max_width: f32,
+) -> Vec<Vec<StyledPiece>> {
+    let tokens = tokenise(runs);
+    let mut out: Vec<Vec<StyledPiece>> = Vec::new();
+    let mut current: Vec<StyledPiece> = Vec::new();
+    let mut current_w = 0.0_f32;
+    for tok in tokens {
+        if tok.text.is_empty() {
+            continue;
+        }
+        let tok_w = measure_piece(face, &tok.text, size_px);
+        // Skip leading whitespace at the start of a wrapped line.
+        if current.is_empty() && tok.is_space {
+            continue;
+        }
+        if !current.is_empty() && current_w + tok_w > max_width {
+            // Wrap before this token.
+            trim_trailing_space_pieces(&mut current);
+            out.push(std::mem::take(&mut current));
+            current_w = 0.0;
+            if tok.is_space {
+                continue;
             }
-            Segment::Timestamp { .. } => {
-                // Invisible — emits no characters.
+        }
+        // Hard-break a single oversized word.
+        if tok_w > max_width && !tok.is_space {
+            for chunk in hard_break_by_width(face, &tok.text, size_px, max_width) {
+                if !current.is_empty() {
+                    trim_trailing_space_pieces(&mut current);
+                    out.push(std::mem::take(&mut current));
+                    current_w = 0.0;
+                }
+                let chunk_w = measure_piece(face, &chunk, size_px);
+                push_piece(
+                    &mut current,
+                    StyledPiece {
+                        text: chunk,
+                        style: tok.style,
+                    },
+                );
+                current_w += chunk_w;
+                if current_w >= max_width {
+                    out.push(std::mem::take(&mut current));
+                    current_w = 0.0;
+                }
             }
+            continue;
+        }
+        push_piece(
+            &mut current,
+            StyledPiece {
+                text: tok.text,
+                style: tok.style,
+            },
+        );
+        current_w += tok_w;
+    }
+    if !current.is_empty() {
+        trim_trailing_space_pieces(&mut current);
+        if !current.is_empty() {
+            out.push(current);
+        }
+    }
+    out
+}
+
+#[cfg(feature = "text")]
+fn push_piece(line: &mut Vec<StyledPiece>, piece: StyledPiece) {
+    if let Some(last) = line.last_mut() {
+        if same_style(&last.style, &piece.style) {
+            last.text.push_str(&piece.text);
+            return;
+        }
+    }
+    line.push(piece);
+}
+
+#[cfg(feature = "text")]
+fn trim_trailing_space_pieces(line: &mut Vec<StyledPiece>) {
+    while let Some(last) = line.last_mut() {
+        let trimmed = last.text.trim_end_matches([' ', '\t']);
+        if trimmed.is_empty() {
+            line.pop();
+        } else if trimmed.len() != last.text.len() {
+            last.text = trimmed.to_string();
+            break;
+        } else {
+            break;
         }
     }
 }
 
-/// Composite a straight-alpha RGBA8 source bitmap onto a straight-alpha
-/// RGBA8 destination at `(x, y)` (top-left). Pixels outside the
-/// destination rectangle are clipped. Blend is Porter-Duff "over" via
-/// [`oxideav_pixfmt::over_straight`].
-#[allow(clippy::too_many_arguments)]
-fn blit_rgba_straight(
-    dst: &mut [u8],
-    dst_w: u32,
-    dst_h: u32,
-    x: i32,
-    y: i32,
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-) {
-    if dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0 {
-        return;
+#[cfg(feature = "text")]
+fn measure_piece(face: &FaceChain, text: &str, size_px: f32) -> f32 {
+    if text.is_empty() {
+        return 0.0;
     }
-    let dx0 = x.max(0);
-    let dy0 = y.max(0);
-    let dx1 = (x + src_w as i32).min(dst_w as i32);
-    let dy1 = (y + src_h as i32).min(dst_h as i32);
-    if dx0 >= dx1 || dy0 >= dy1 {
-        return;
+    match face.shape(text, size_px) {
+        Ok(glyphs) => oxideav_scribe::run_width(&glyphs),
+        Err(_) => 0.0,
     }
-    let sx0 = (dx0 - x) as usize;
-    let sy0 = (dy0 - y) as usize;
-    let blit_w = (dx1 - dx0) as usize;
-    let blit_h = (dy1 - dy0) as usize;
-    let dst_stride = dst_w as usize * 4;
-    let src_stride = src_w as usize * 4;
-    for row in 0..blit_h {
-        let dst_row_off = (dy0 as usize + row) * dst_stride + (dx0 as usize) * 4;
-        let src_row_off = (sy0 + row) * src_stride + sx0 * 4;
-        for col in 0..blit_w {
-            let so = src_row_off + col * 4;
-            let s = [src[so], src[so + 1], src[so + 2], src[so + 3]];
-            if s[3] == 0 {
-                continue;
-            }
-            let dop = dst_row_off + col * 4;
-            let d = [dst[dop], dst[dop + 1], dst[dop + 2], dst[dop + 3]];
-            let out = oxideav_pixfmt::over_straight(s, d);
-            dst[dop] = out[0];
-            dst[dop + 1] = out[1];
-            dst[dop + 2] = out[2];
-            dst[dop + 3] = out[3];
+}
+
+/// Hard-break a long word into character chunks each <= `max_width`.
+#[cfg(feature = "text")]
+fn hard_break_by_width(face: &FaceChain, text: &str, size_px: f32, max_width: f32) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for ch in text.chars() {
+        let mut candidate = cur.clone();
+        candidate.push(ch);
+        let w = measure_piece(face, &candidate, size_px);
+        if w > max_width && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
         }
+        cur.push(ch);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Recursively repaint every `PathNode`'s fill with `paint`. The default
+/// fill from `Face::glyph_node` is opaque black; subtitle runs carry a
+/// (per-run) colour we want to apply instead.
+#[cfg(feature = "text")]
+fn repaint_node(node: Node, paint: &Paint) -> Node {
+    match node {
+        Node::Path(PathNode {
+            path,
+            stroke,
+            fill_rule,
+            ..
+        }) => Node::Path(PathNode {
+            path,
+            fill: Some(paint.clone()),
+            stroke,
+            fill_rule,
+        }),
+        Node::Group(mut g) => {
+            g.children = g
+                .children
+                .into_iter()
+                .map(|c| repaint_node(c, paint))
+                .collect();
+            Node::Group(g)
+        }
+        other => other,
+    }
+}
+
+#[cfg(feature = "text")]
+fn rgba_to_core(c: [u8; 4]) -> CoreRgba {
+    CoreRgba::new(c[0], c[1], c[2], c[3])
+}
+
+/// Composite a straight-alpha RGBA8 source bitmap onto a straight-alpha
+/// RGBA8 destination of the same dimensions. Skips fully-transparent
+/// source pixels. Blend is Porter-Duff "over" via
+/// [`oxideav_pixfmt::over_straight`].
+#[cfg(feature = "text")]
+fn composite_straight_over(dst: &mut [u8], src: &[u8], width: u32, height: u32) {
+    let n = (width as usize) * (height as usize);
+    if dst.len() < n * 4 || src.len() < n * 4 {
+        return;
+    }
+    for i in 0..n {
+        let off = i * 4;
+        let s = [src[off], src[off + 1], src[off + 2], src[off + 3]];
+        if s[3] == 0 {
+            continue;
+        }
+        let d = [dst[off], dst[off + 1], dst[off + 2], dst[off + 3]];
+        let out = oxideav_pixfmt::over_straight(s, d);
+        dst[off] = out[0];
+        dst[off + 1] = out[1];
+        dst[off + 2] = out[2];
+        dst[off + 3] = out[3];
     }
 }
 
 // ---------------------------------------------------------------------------
-// Run / line model
+// Run / line model (shared by both back-ends)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug)]
@@ -796,23 +1040,6 @@ mod tests {
     }
 
     #[test]
-    fn flatten_to_text_walks_segments() {
-        // Bold("Hi") + " " + Italic("there") + LineBreak + Voice("J", "yo")
-        let segs = vec![
-            Segment::Bold(vec![Segment::Text("Hi".into())]),
-            Segment::Text(" ".into()),
-            Segment::Italic(vec![Segment::Text("there".into())]),
-            Segment::LineBreak,
-            Segment::Voice {
-                name: "J".into(),
-                children: vec![Segment::Text("yo".into())],
-            },
-        ];
-        let txt = flatten_to_text(&segs);
-        assert_eq!(txt, "Hi there\nJ: yo");
-    }
-
-    #[test]
     fn no_face_means_bitmap_path() {
         let comp = Compositor::new(160, 80);
         assert!(!comp.has_face());
@@ -820,6 +1047,7 @@ mod tests {
 
     /// Smoke test: a Compositor built `with_face` from the DejaVu fixture
     /// renders some lit pixels for a simple cue.
+    #[cfg(feature = "text")]
     #[test]
     fn scribe_path_renders_text() {
         let bytes = match std::fs::read("../oxideav-ttf/tests/fixtures/DejaVuSans.ttf") {
@@ -828,7 +1056,8 @@ mod tests {
         };
         let face =
             oxideav_scribe::Face::from_ttf_bytes(bytes).expect("failed to parse DejaVuSans.ttf");
-        let mut comp = Compositor::with_face(320, 240, face);
+        let chain = oxideav_scribe::FaceChain::new(face);
+        let mut comp = Compositor::with_face(320, 240, chain);
         comp.font_size_px = 24.0;
         assert!(comp.has_face());
         let cue = make_cue(vec![Segment::Text("Hello".into())]);

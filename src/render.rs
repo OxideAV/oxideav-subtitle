@@ -50,11 +50,17 @@ impl RenderedSubtitleDecoder {
         }
     }
 
-    /// Builder: switch the inner Compositor to the Scribe TTF
-    /// back-end using `face`. Discards any previously-set face.
+    /// Builder: switch the inner Compositor to the Scribe + Raster TTF
+    /// back-end using `face` (a [`oxideav_scribe::FaceChain`]; pass
+    /// `FaceChain::new(primary)` for a single-face setup, then chain
+    /// `.push_fallback(other)` for fallback faces). Discards any
+    /// previously-set chain.
+    ///
+    /// Available only when the `text` cargo feature is enabled (default).
     /// Combine with [`Self::compositor_mut`] to tune `font_size_px`,
     /// margins, etc.
-    pub fn with_face(mut self, face: oxideav_scribe::Face) -> Self {
+    #[cfg(feature = "text")]
+    pub fn with_face(mut self, face: oxideav_scribe::FaceChain) -> Self {
         self.compositor.set_face(Some(face));
         self
     }
@@ -113,13 +119,16 @@ pub fn make_rendered_decoder(inner: Box<dyn Decoder>, width: u32, height: u32) -
 }
 
 /// Factory: wrap an existing subtitle decoder and configure it to use
-/// the Scribe TTF back-end with `face`. Equivalent to
+/// the Scribe + Raster TTF back-end with `face`. Equivalent to
 /// `RenderedSubtitleDecoder::new(...).with_face(face)`.
+///
+/// Available only when the `text` cargo feature is enabled (default).
+#[cfg(feature = "text")]
 pub fn make_rendered_decoder_with_face(
     inner: Box<dyn Decoder>,
     width: u32,
     height: u32,
-    face: oxideav_scribe::Face,
+    face: oxideav_scribe::FaceChain,
 ) -> Box<dyn Decoder> {
     Box::new(RenderedSubtitleDecoder::new(inner, width, height).with_face(face))
 }

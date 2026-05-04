@@ -13,10 +13,23 @@ homepage = "https://github.com/OxideAV/oxideav-subtitle"
 keywords = ["multimedia", "subtitle", "srt", "webvtt", "pure-rust"]
 categories = ["multimedia", "parser-implementations"]
 
+[features]
+# `text` enables the high-quality TTF rendering path: shape via
+# `oxideav-scribe` (`Shaper::shape_to_paths`), then rasterise the resulting
+# glyph nodes through `oxideav-raster`'s vector→raster renderer onto the
+# subtitle frame. Default-on so an out-of-the-box `oxideav-subtitle = "0.1"`
+# can render real fonts; downstream embedders that only need the
+# `BitmapFont` fallback (no TTF face configured, no scribe / raster dep
+# tree) can opt out via `default-features = false`.
+default = ["text"]
+text = ["dep:oxideav-scribe", "dep:oxideav-raster"]
+
 [dependencies]
 oxideav-core = "0.1"
-oxideav-scribe = "0.1"
 oxideav-pixfmt = "0.1"
+# Both gated behind the `text` feature — see `[features]` above.
+oxideav-scribe = { version = "0.1", optional = true }
+oxideav-raster = { version = "0.1", optional = true }
 
 [dev-dependencies]
 oxideav-core = "0.1"

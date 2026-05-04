@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Compositor TTF path now goes shape (oxideav-scribe `Shaper::shape_to_paths`)
+  → vector scene (`oxideav_core::VectorFrame`) → rasterise
+  (`oxideav_raster::Renderer`). Per-run colour from the SubtitleCue's
+  `Segment::Color` is honoured (the previous round-1 path forced the whole
+  cue to one colour). The bitmap-font path is unchanged.
+- `Compositor::with_face` and `RenderedSubtitleDecoder::with_face` now take
+  an `oxideav_scribe::FaceChain` instead of a single `Face`, so callers
+  can install fallback faces (CJK / emoji) alongside the primary. Wrap a
+  single face with `FaceChain::new(face)` to migrate.
+
+### Added
+
+- `text` cargo feature (default-on): gates the TTF rendering path. When
+  disabled, the crate drops both `oxideav-scribe` and `oxideav-raster`
+  from its dep tree and only the `BitmapFont` fallback is available;
+  `Compositor::with_face` / `set_face` / `clear_face` /
+  `make_rendered_decoder_with_face` are compiled out. Mirrors the
+  `oxideav-svg` `text` feature pattern so embedders that only need the
+  bitmap path can opt out via `default-features = false`.
+- `oxideav-raster = "0.1"` (optional, gated behind `text`) — vector
+  scene rasteriser used by the new TTF path.
+- `tests/render.rs::srt_round_trip_renders_through_both_paths` —
+  feeds an SRT cue through `srt::parse` then renders via both the
+  bitmap-font path and (when the `text` feature is enabled and the
+  DejaVu fixture is present) the Scribe + Raster path, verifying both
+  produce non-zero pixel output.
+
 ## [0.1.0](https://github.com/OxideAV/oxideav-subtitle/compare/v0.0.5...v0.1.0) - 2026-05-03
 
 ### Other

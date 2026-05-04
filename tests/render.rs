@@ -4,9 +4,9 @@ use std::collections::VecDeque;
 
 use oxideav_core::Decoder;
 use oxideav_core::{CodecId, Error, Frame, Packet, Result, Segment, SubtitleCue};
-use oxideav_subtitle::{
-    make_rendered_decoder, make_rendered_decoder_with_face, Compositor, RenderedSubtitleDecoder,
-};
+#[cfg(feature = "text")]
+use oxideav_subtitle::make_rendered_decoder_with_face;
+use oxideav_subtitle::{make_rendered_decoder, Compositor, RenderedSubtitleDecoder};
 
 fn mkcue(segs: Vec<Segment>) -> SubtitleCue {
     SubtitleCue {
@@ -247,24 +247,27 @@ fn make_rendered_decoder_factory() {
 }
 
 // ------------------------------------------------------------------
-// Scribe TTF back-end integration
+// Scribe + Raster back-end integration (feature = "text")
 // ------------------------------------------------------------------
 
 /// The DejaVu fixture lives under the sibling `oxideav-ttf` crate.
 /// Tests that need it skip silently if the file isn't present (e.g.
 /// when this crate is built outside the monorepo).
-fn try_load_dejavu() -> Option<oxideav_scribe::Face> {
+#[cfg(feature = "text")]
+fn try_load_dejavu_chain() -> Option<oxideav_scribe::FaceChain> {
     let bytes = std::fs::read("../oxideav-ttf/tests/fixtures/DejaVuSans.ttf").ok()?;
-    oxideav_scribe::Face::from_ttf_bytes(bytes).ok()
+    let face = oxideav_scribe::Face::from_ttf_bytes(bytes).ok()?;
+    Some(oxideav_scribe::FaceChain::new(face))
 }
 
+#[cfg(feature = "text")]
 #[test]
 fn scribe_path_compositor_renders_lit_pixels() {
-    let face = match try_load_dejavu() {
-        Some(f) => f,
+    let chain = match try_load_dejavu_chain() {
+        Some(c) => c,
         None => return,
     };
-    let mut comp = Compositor::with_face(640, 480, face);
+    let mut comp = Compositor::with_face(640, 480, chain);
     comp.font_size_px = 28.0;
     let cue = mkcue(vec![Segment::Text("Hello, world!".into())]);
     let buf = comp.render(&cue);
@@ -294,15 +297,16 @@ fn scribe_path_compositor_renders_lit_pixels() {
     }
 }
 
+#[cfg(feature = "text")]
 #[test]
 fn scribe_path_via_rendered_decoder_with_face() {
-    let face = match try_load_dejavu() {
-        Some(f) => f,
+    let chain = match try_load_dejavu_chain() {
+        Some(c) => c,
         None => return,
     };
     let cue = mkcue(vec![Segment::Text("Subtitle".into())]);
     let inner = Box::new(CannedDecoder::new(vec![Frame::Subtitle(cue)]));
-    let mut wrapper = RenderedSubtitleDecoder::new(inner, 320, 200).with_face(face);
+    let mut wrapper = RenderedSubtitleDecoder::new(inner, 320, 200).with_face(chain);
     match wrapper.receive_frame() {
         Ok(Frame::Video(vf)) => {
             assert_eq!(vf.planes.len(), 1);
@@ -315,18 +319,20 @@ fn scribe_path_via_rendered_decoder_with_face() {
     }
 }
 
+#[cfg(feature = "text")]
 #[test]
 fn scribe_factory_with_face_works() {
-    let face = match try_load_dejavu() {
-        Some(f) => f,
+    let chain = match try_load_dejavu_chain() {
+        Some(c) => c,
         None => return,
     };
     let cue = mkcue(vec![Segment::Text("F".into())]);
     let inner: Box<dyn Decoder> = Box::new(CannedDecoder::new(vec![Frame::Subtitle(cue)]));
-    let mut wrapper = make_rendered_decoder_with_face(inner, 96, 64, face);
+    let mut wrapper = make_rendered_decoder_with_face(inner, 96, 64, chain);
     assert!(matches!(wrapper.receive_frame(), Ok(Frame::Video(_))));
 }
 
+#[cfg(feature = "text")]
 #[test]
 fn scribe_and_bitmap_paths_both_produce_lit_pixels_for_same_cue() {
     // Sanity: each back-end produces *some* output for the same cue,
@@ -337,13 +343,56 @@ fn scribe_and_bitmap_paths_both_produce_lit_pixels_for_same_cue() {
     let bitmap_lit = bitmap_buf.chunks(4).filter(|p| p[3] > 0).count();
     assert!(bitmap_lit > 0, "bitmap path produced no pixels");
 
-    let face = match try_load_dejavu() {
-        Some(f) => f,
+    let chain = match try_load_dejavu_chain() {
+        Some(c) => c,
         None => return,
     };
-    let mut comp = Compositor::with_face(160, 120, face);
+    let mut comp = Compositor::with_face(160, 120, chain);
     comp.font_size_px = 16.0;
     let scribe_buf = comp.render(&cue);
     let scribe_lit = scribe_buf.chunks(4).filter(|p| p[3] > 0).count();
     assert!(scribe_lit > 0, "scribe path produced no pixels");
+}
+
+// ------------------------------------------------------------------
+// End-to-end: SRT cue → both compositor paths produce non-zero output
+// ------------------------------------------------------------------
+
+/// Round-trip an SRT cue text through `srt::parse` and feed the resulting
+/// SubtitleCue through both the bitmap-font path and (when the `text`
+/// feature is enabled and the DejaVu fixture is present) the
+/// Scribe + Raster path. Both paths must produce non-zero pixel output.
+#[test]
+fn srt_round_trip_renders_through_both_paths() {
+    let srt_bytes: &[u8] = b"1\n00:00:01,000 --> 00:00:02,500\nHello, world!\n\n";
+    let track = oxideav_subtitle::srt::parse(srt_bytes).expect("parse SRT");
+    assert_eq!(track.cues.len(), 1);
+    let cue = track.cues.into_iter().next().unwrap();
+
+    // --- Bitmap-font path (always available) -----------------------------
+    let bitmap_buf = Compositor::new(320, 240).render(&cue);
+    assert_eq!(bitmap_buf.len(), 320 * 240 * 4);
+    let bitmap_lit = bitmap_buf.chunks(4).filter(|p| p[3] > 0).count();
+    assert!(
+        bitmap_lit > 0,
+        "bitmap-font path produced no lit pixels for SRT round-trip"
+    );
+
+    // --- Scribe + Raster path (feature-gated; needs the TTF fixture) ----
+    #[cfg(feature = "text")]
+    {
+        let chain = match try_load_dejavu_chain() {
+            Some(c) => c,
+            None => return, // fixture missing in standalone build — bitmap path covered the test
+        };
+        let mut comp = Compositor::with_face(320, 240, chain);
+        comp.font_size_px = 24.0;
+        let scribe_buf = comp.render(&cue);
+        assert_eq!(scribe_buf.len(), 320 * 240 * 4);
+        let scribe_lit = scribe_buf.chunks(4).filter(|p| p[3] > 0).count();
+        assert!(
+            scribe_lit > 0,
+            "Scribe + Raster path produced no lit pixels for SRT round-trip"
+        );
+    }
 }
