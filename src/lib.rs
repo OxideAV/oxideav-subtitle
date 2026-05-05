@@ -72,6 +72,7 @@ pub mod vplayer;
 pub mod webvtt;
 
 use oxideav_core::ContainerRegistry;
+use oxideav_core::RuntimeContext;
 use oxideav_core::{CodecCapabilities, CodecId, MediaType};
 use oxideav_core::{CodecInfo, CodecRegistry};
 
@@ -154,8 +155,35 @@ pub fn register_containers(reg: &mut ContainerRegistry) {
     container::register(reg);
 }
 
-/// Convenience combined registration.
-pub fn register(codecs: &mut CodecRegistry, containers: &mut ContainerRegistry) {
-    register_codecs(codecs);
-    register_containers(containers);
+/// Unified registration entry point — installs all text subtitle
+/// codecs into the codec sub-registry and the matching containers
+/// into the container sub-registry of the supplied [`RuntimeContext`].
+pub fn register(ctx: &mut RuntimeContext) {
+    register_codecs(&mut ctx.codecs);
+    register_containers(&mut ctx.containers);
+}
+
+#[cfg(test)]
+mod register_tests {
+    use super::*;
+
+    #[test]
+    fn register_via_runtime_context_installs_both_sides() {
+        let mut ctx = RuntimeContext::new();
+        register(&mut ctx);
+        let id = CodecId::new(codec::SRT_CODEC_ID);
+        assert!(
+            ctx.codecs.has_decoder(&id),
+            "SRT decoder factory not installed via RuntimeContext"
+        );
+        assert!(
+            ctx.codecs.has_encoder(&id),
+            "SRT encoder factory not installed via RuntimeContext"
+        );
+        assert_eq!(
+            ctx.containers.container_for_extension("srt"),
+            Some("srt"),
+            "SRT container extension not installed via RuntimeContext"
+        );
+    }
 }
