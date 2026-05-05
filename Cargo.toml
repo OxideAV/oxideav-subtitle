@@ -27,6 +27,10 @@ text = ["dep:oxideav-scribe", "dep:oxideav-raster"]
 [dependencies]
 oxideav-core = "0.1"
 oxideav-pixfmt = "0.1"
+# Distributed-slice auto-registration into `oxideav_core::REGISTRARS`
+# via the `oxideav_core::register!` macro. Tiny crate, no transitive
+# deps; works on every target including wasm.
+linkme = "0.3"
 # Both gated behind the `text` feature — see `[features]` above.
 oxideav-scribe = { version = "0.1", optional = true }
 oxideav-raster = { version = "0.1", optional = true }
