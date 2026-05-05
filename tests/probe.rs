@@ -84,7 +84,7 @@ fn mux_srt_reemits_cues() {
 
     // Decode packets through the codec for good measure.
     let dec_params = CodecParameters::subtitle(CodecId::new("subrip"));
-    let mut dec = codecs.make_decoder(&dec_params).unwrap();
+    let mut dec = codecs.first_decoder(&dec_params).unwrap();
     dec.send_packet(&packets[0]).unwrap();
     let f = dec.receive_frame().unwrap();
     match f {
