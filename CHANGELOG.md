@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/OxideAV/oxideav-subtitle/compare/v0.1.0...v0.1.1) - 2026-05-06
+
+### Other
+
+- reframe FFI claim — HW-engine crates use OS FFI by necessity
+- drop stale REGISTRARS / with_all_features intra-doc links
+- drop dead `linkme` dep
+- registry calls: rename make_decoder/make_encoder → first_decoder/first_encoder
+- auto-register via oxideav_core::register! macro (linkme distributed slice)
+- unify entry point on register(&mut RuntimeContext) ([#502](https://github.com/OxideAV/oxideav-subtitle/pull/502))
+- cargo fmt the new make_rendered_decoder_with_face import order
+- shape via scribe → rasterise via oxideav-raster ([#355](https://github.com/OxideAV/oxideav-subtitle/pull/355))
+- bump oxideav-scribe pin to 0.1
+- release v0.1.0
+
 ### Changed
 
 - Compositor TTF path now goes shape (oxideav-scribe `Shaper::shape_to_paths`)
