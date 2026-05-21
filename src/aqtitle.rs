@@ -34,7 +34,7 @@ const TRAILING_FRAMES: i64 = 75; // ~3 s at 25 fps
 
 /// Parse an AQTitle payload.
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = strip_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let fps = DEFAULT_FPS;
 
     // Pass 1: build a sequence of (start_frame, body_lines).
@@ -126,7 +126,7 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
 
 /// Quick probe — look for a `-->>` marker near the top.
 pub fn probe(buf: &[u8]) -> u8 {
-    let text = strip_bom(buf);
+    let text = crate::encoding::decode_subtitle_text(buf);
     let mut checked = 0;
     for raw in text.split('\n') {
         let line = raw.trim_end_matches('\r').trim();
@@ -197,7 +197,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 }
 
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
-    let text = strip_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
     let mut start_frame: Option<i64> = None;
     let mut end_frame: Option<i64> = None;
@@ -291,15 +291,6 @@ fn us_to_frame(us: i64, fps: f64) -> i64 {
         return 0;
     }
     ((us as f64 / 1_000_000.0) * fps).round() as i64
-}
-
-fn strip_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
 }
 
 // ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@ use crate::ir::{SourceFormat, SubtitleTrack};
 pub const CODEC_ID: &str = "realtext";
 
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let mut track = SubtitleTrack {
         source: Some(SourceFormat::Srt), // No dedicated enum variant — stand-in.
         ..SubtitleTrack::default()
@@ -282,7 +282,7 @@ impl Encoder for RtEncoder {
 }
 
 pub(crate) fn looks_like_realtext(buf: &[u8]) -> bool {
-    let text = decode_utf8_lossy_stripping_bom(buf);
+    let text = crate::encoding::decode_subtitle_text(buf);
     let lc = text.to_ascii_lowercase();
     lc.contains("<window") && lc.contains("<time")
 }
@@ -609,15 +609,6 @@ fn format_seconds(us: i64) -> String {
     }
 }
 
-fn decode_utf8_lossy_stripping_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
-}
-
 // ---------------------------------------------------------------------------
 // Packet helpers.
 
@@ -633,7 +624,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 }
 
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let lc = text.to_ascii_lowercase();
     let t_start = lc
         .find("<time")

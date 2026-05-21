@@ -37,7 +37,7 @@ pub const CODEC_ID: &str = "sami";
 
 /// Parse a SAMI payload into a [`SubtitleTrack`].
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let mut track = SubtitleTrack {
         source: Some(SourceFormat::Srt), // SAMI not in enum — annotate metadata
         ..SubtitleTrack::default()
@@ -240,7 +240,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 }
 
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> oxideav_core::Result<SubtitleCue> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     // Expect "<SYNC Start=...>\n<P ...>...</P>".
     let start_ms = find_attr_u64(&text, "start")
         .ok_or_else(|| oxideav_core::Error::invalid("SAMI cue: missing Start attribute"))?;
@@ -836,15 +836,6 @@ fn lookup_entity(name: &str) -> Option<char> {
         "nbsp" => Some('\u{00A0}'),
         _ => None,
     }
-}
-
-fn decode_utf8_lossy_stripping_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
 }
 
 #[cfg(test)]

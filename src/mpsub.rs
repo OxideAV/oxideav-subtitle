@@ -40,7 +40,7 @@ pub const DEFAULT_FPS: f64 = 25.0;
 
 /// Parse an MPsub payload.
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = strip_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
 
     let mut mode = Mode::Time;
@@ -187,7 +187,7 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
 
 /// Quick probe — positive score if a `FORMAT=` header appears early.
 pub fn probe(buf: &[u8]) -> u8 {
-    let text = strip_bom(buf);
+    let text = crate::encoding::decode_subtitle_text(buf);
     let mut checked = 0;
     let mut saw_format = false;
     let mut saw_timing = false;
@@ -260,7 +260,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 }
 
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
-    let text = strip_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
     let mut i = 0;
     while i < lines.len() && lines[i].trim().is_empty() {
@@ -389,15 +389,6 @@ fn fmt_secs(us: i64) -> String {
     } else {
         base
     }
-}
-
-fn strip_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
 }
 
 // ---------------------------------------------------------------------------

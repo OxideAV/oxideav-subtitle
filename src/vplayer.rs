@@ -33,7 +33,7 @@ pub const TRAILING_CUE_US: i64 = 3_000_000;
 
 /// Parse a VPlayer payload.
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = strip_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     // Pass 1: collect timing + body pairs.
     let mut raw_cues: Vec<(i64, String)> = Vec::new();
     for raw in text.split('\n') {
@@ -84,7 +84,7 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
 /// Quick probe — positive score if the first non-empty line parses as
 /// `HH:MM:SS:text`.
 pub fn probe(buf: &[u8]) -> u8 {
-    let text = strip_bom(buf);
+    let text = crate::encoding::decode_subtitle_text(buf);
     let mut checked = 0;
     let mut hits = 0;
     for raw in text.split('\n') {
@@ -151,7 +151,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 }
 
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
-    let text = strip_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let line = text
         .lines()
         .map(|l| l.trim_end_matches('\r').trim_end())
@@ -249,15 +249,6 @@ fn fmt_hms(us: i64) -> String {
     let m = (total_s / 60) % 60;
     let s = total_s % 60;
     format!("{:02}:{:02}:{:02}", h, m, s)
-}
-
-fn strip_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
 }
 
 // ---------------------------------------------------------------------------

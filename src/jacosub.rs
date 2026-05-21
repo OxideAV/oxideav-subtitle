@@ -46,7 +46,7 @@ const DEFAULT_TIMERES: u32 = 30;
 
 /// Parse a UTF-8 JACOsub payload into a track.
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let mut track = SubtitleTrack {
         source: Some(SourceFormat::Srt), // No dedicated enum variant — closest stand-in.
         ..SubtitleTrack::default()
@@ -306,7 +306,7 @@ impl Encoder for JacosubEncoder {
 }
 
 pub(crate) fn looks_like_jacosub(buf: &[u8]) -> bool {
-    let text = decode_utf8_lossy_stripping_bom(buf);
+    let text = crate::encoding::decode_subtitle_text(buf);
     let mut saw_header = false;
     for line in text.lines() {
         let trimmed = line.trim();
@@ -657,7 +657,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 }
 
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('@') {
@@ -670,15 +670,6 @@ pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
 }
 
 // ---------------------------------------------------------------------------
-
-fn decode_utf8_lossy_stripping_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
-}
 
 fn split_first_word(s: &str) -> (&str, &str) {
     let s = s.trim_start();

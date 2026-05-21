@@ -37,7 +37,7 @@ pub const DEFAULT_FPS: f64 = 25.0;
 
 /// Parse a MicroDVD payload.
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = strip_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let mut cues: Vec<SubtitleCue> = Vec::new();
     let mut fps = DEFAULT_FPS;
 
@@ -109,7 +109,7 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
 
 /// Quick probe — looks at the first non-empty lines for `{n}{n}...` shape.
 pub fn probe(buf: &[u8]) -> u8 {
-    let text = strip_bom(buf);
+    let text = crate::encoding::decode_subtitle_text(buf);
     let mut checked = 0;
     let mut hits = 0;
     for raw in text.split('\n') {
@@ -182,7 +182,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue, fps: f64) -> Vec<u8> {
 }
 
 pub(crate) fn bytes_to_cue(bytes: &[u8], fps: f64) -> Result<SubtitleCue> {
-    let text = strip_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let line = text
         .lines()
         .map(|l| l.trim_end_matches('\r').trim())
@@ -421,15 +421,6 @@ fn fmt_fps(fps: f64) -> String {
 
 // ---------------------------------------------------------------------------
 // Misc
-
-fn strip_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
-}
 
 fn memchr(needle: u8, haystack: &[u8]) -> Option<usize> {
     haystack.iter().position(|&b| b == needle)

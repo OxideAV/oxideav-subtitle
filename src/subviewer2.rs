@@ -37,7 +37,7 @@ use crate::ir::{SourceFormat, SubtitleTrack};
 pub const CODEC_ID: &str = "subviewer2";
 
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let mut track = SubtitleTrack {
         source: Some(SourceFormat::Srt),
         ..SubtitleTrack::default()
@@ -296,7 +296,7 @@ impl Encoder for Sv2Encoder {
 }
 
 pub(crate) fn looks_like_subviewer2(buf: &[u8]) -> bool {
-    let text = decode_utf8_lossy_stripping_bom(buf);
+    let text = crate::encoding::decode_subtitle_text(buf);
     let lc = text.to_ascii_lowercase();
     if lc.contains("[information]") && lc.contains("[subtitle]") {
         return true;
@@ -437,15 +437,6 @@ fn append_segments(segments: &[Segment], out: &mut String) {
     }
 }
 
-fn decode_utf8_lossy_stripping_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
-}
-
 // ---------------------------------------------------------------------------
 // Packet helpers.
 
@@ -458,7 +449,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 }
 
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let mut lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
     while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) {
         lines.remove(0);

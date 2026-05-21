@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New crate-private `encoding` module with a `decode_subtitle_text`
+  helper that sniffs UTF-8 / UTF-16 LE / UTF-16 BE BOMs and normalises
+  CRLF / lone-CR line endings to LF. Every parser (SRT, WebVTT,
+  MicroDVD, MPL2, MPsub, VPlayer, PJS, AQTitle, JACOsub, RealText,
+  SubViewer 1/2, TTML, SAMI) routes through it, so a UTF-16-with-BOM
+  file (the format YouTube's SRT export emits) and a classic-Mac
+  CR-only file are now both accepted everywhere instead of producing
+  a single-line garbled track.
+- `tests/encoding_tolerance.rs` — 11 integration tests covering
+  UTF-16 LE / UTF-16 BE / Mac CR-only / DOS CRLF / mixed-newline /
+  surrogate-pair / odd-tail-byte cases on the four common parsers
+  (SRT, WebVTT, MicroDVD, MPL2). 16 unit tests in `encoding.rs`
+  cover the helper directly (BMP + supplementary-plane decode,
+  CR-inside-text, multibyte UTF-8 preservation, etc.).
+
+### Changed
+
+- Removed 13 copy-pasted local `strip_bom` / `decode_utf8_lossy_stripping_bom`
+  helpers (one per parser module) in favour of the shared
+  `encoding::decode_subtitle_text`. Behaviour is a strict superset of
+  the previous per-parser helpers: every previously-accepted file
+  still parses identically; UTF-16 BOMs and CR-only line endings now
+  also work.
+
+
 ## [0.1.1](https://github.com/OxideAV/oxideav-subtitle/compare/v0.1.0...v0.1.1) - 2026-05-06
 
 ### Other

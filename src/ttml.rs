@@ -26,7 +26,7 @@ pub const CODEC_ID: &str = "ttml";
 
 /// Parse a TTML payload into a [`SubtitleTrack`].
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let nodes = parse_xml(&text)?;
     let tt = find_element(&nodes, "tt").ok_or_else(|| Error::invalid("TTML: missing <tt> root"))?;
 
@@ -426,7 +426,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 }
 
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let nodes = parse_xml(&text)?;
     let p = find_element(&nodes, "p").ok_or_else(|| Error::invalid("TTML cue: missing <p>"))?;
     let start_us = attr(p, "begin")
@@ -971,15 +971,6 @@ fn escape_attr(s: &str) -> String {
         }
     }
     out
-}
-
-fn decode_utf8_lossy_stripping_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
 }
 
 #[cfg(test)]

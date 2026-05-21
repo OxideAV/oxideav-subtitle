@@ -22,7 +22,7 @@ use crate::ir::{SourceFormat, SubtitleTrack};
 
 /// Parse a UTF-8 (or UTF-8 with a leading BOM) SRT payload into a track.
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let mut cues: Vec<SubtitleCue> = Vec::new();
 
     // Normalise line endings and walk cue-by-cue. We don't split on blank
@@ -478,19 +478,10 @@ fn named_color(name: &str) -> Option<(u8, u8, u8)> {
 
 // ---------------------------------------------------------------------------
 
-fn decode_utf8_lossy_stripping_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
-}
-
 /// Quick header check. Used by the container probe to tell SRT apart from
 /// other text formats.
 pub(crate) fn looks_like_srt(buf: &[u8]) -> bool {
-    let text = decode_utf8_lossy_stripping_bom(buf);
+    let text = crate::encoding::decode_subtitle_text(buf);
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let first = match lines.next() {
         Some(v) => v.trim(),
@@ -525,7 +516,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 
 /// Parse one cue (as emitted by [`cue_to_bytes`]) back into a [`SubtitleCue`].
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let mut lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
     // Optional leading blank lines.
     while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) {

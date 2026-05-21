@@ -53,6 +53,7 @@ pub mod codec;
 pub mod compositor;
 pub mod container;
 pub mod ebu_stl;
+pub(crate) mod encoding;
 pub mod font;
 pub mod ir;
 pub mod jacosub;

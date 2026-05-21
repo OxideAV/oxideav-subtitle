@@ -28,7 +28,7 @@ use crate::ir::{SourceFormat, SubtitleTrack};
 
 /// Parse a UTF-8 WebVTT payload into a track.
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let mut lines_iter = text.split('\n').map(|l| l.trim_end_matches('\r'));
     let header = match lines_iter.next() {
         Some(v) => v,
@@ -678,15 +678,6 @@ fn append_segments(segments: &[Segment], out: &mut String) {
 
 // ---------------------------------------------------------------------------
 
-fn decode_utf8_lossy_stripping_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
-}
-
 /// CSS color parser — accepts `#RGB`, `#RRGGBB`, `rgb(r,g,b)`,
 /// `rgba(r,g,b,a)`, and named colors. Returns RGBA with an opaque alpha
 /// when the source has no alpha.
@@ -766,7 +757,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 }
 
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let mut lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
     while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) {
         lines.remove(0);

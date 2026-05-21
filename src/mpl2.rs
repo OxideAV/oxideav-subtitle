@@ -28,7 +28,7 @@ pub const CODEC_ID: &str = "mpl2";
 
 /// Parse an MPL2 payload.
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
-    let text = strip_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let mut cues: Vec<SubtitleCue> = Vec::new();
     for raw in text.split('\n') {
         let line = raw.trim_end_matches('\r').trim();
@@ -68,7 +68,7 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
 
 /// Quick probe: look for the `[n][n]...` shape.
 pub fn probe(buf: &[u8]) -> u8 {
-    let text = strip_bom(buf);
+    let text = crate::encoding::decode_subtitle_text(buf);
     let mut checked = 0;
     let mut hits = 0;
     for raw in text.split('\n') {
@@ -137,7 +137,7 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 }
 
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
-    let text = strip_bom(bytes);
+    let text = crate::encoding::decode_subtitle_text(bytes);
     let line = text
         .lines()
         .map(|l| l.trim_end_matches('\r').trim())
@@ -253,15 +253,6 @@ fn ds_to_us(ds: i64) -> i64 {
 
 fn us_to_ds(us: i64) -> i64 {
     (us + 50_000) / 100_000
-}
-
-fn strip_bom(bytes: &[u8]) -> String {
-    let stripped = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(stripped).into_owned()
 }
 
 // ---------------------------------------------------------------------------

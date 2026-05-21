@@ -84,6 +84,28 @@ this path.
 The bitmap-font path is unaffected by these and continues to honour
 bold / italic / per-run colour as before.
 
+## Input encoding tolerance
+
+Every text-subtitle parser in this crate routes its raw bytes through
+the shared `encoding::decode_subtitle_text` helper, which transparently
+accepts:
+
+* **UTF-8** (the canonical encoding for every format), with or without
+  a leading `EF BB BF` BOM.
+* **UTF-16 LE with BOM** (`FF FE …`), commonly emitted by YouTube's
+  SRT export and various Windows authoring tools.
+* **UTF-16 BE with BOM** (`FE FF …`).
+
+Line endings are normalised to LF before parsing, so files saved with
+DOS (`\r\n`), Unix (`\n`), or **classic Mac OS** (`\r`-only) line
+terminators are all handled identically. WebVTT §4 explicitly lists all
+three as valid line terminators; the legacy formats (SRT, MicroDVD,
+MPL2, …) have no formal spec and the consensus interop behaviour is to
+accept the same matrix.
+
+Invalid byte sequences in any decode path are replaced with U+FFFD —
+we never reject a file because a single byte was malformed.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
