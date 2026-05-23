@@ -178,6 +178,60 @@ fn full_region_block_round_trips_through_synthesised_write() {
     );
 }
 
+#[test]
+fn cue_payload_inline_markup_round_trips_end_to_end() {
+    // WebVTT §3.5 cue components: bold/italic/underline, voice with
+    // annotation, class chain, language span with a BCP 47 tag, ruby with
+    // both explicit and implicit `</rt>`, an inline timestamp, and a
+    // multi-byte UTF-8 codepoint in the surrounding text. The whole
+    // bundle must survive a parse → write → parse cycle byte-for-byte.
+    let src = "WEBVTT\n\n\
+        00:00:01.000 --> 00:00:05.000\n\
+        <v Alice>Sur les <i><lang en>playground</lang></i>, ici à Montpellier — \
+<c.warn.big>look<00:00:02.000>here</c></v>\n\n\
+        00:00:06.000 --> 00:00:09.000\n\
+        <ruby>漢<rt>kan</rt>字<rt>ji</rt></ruby> + implicit: \
+<ruby>明<rt>みん</ruby>\n";
+    let t = webvtt::parse(src.as_bytes()).unwrap();
+
+    // Re-emit and re-parse — the second emit must equal the first.
+    let out1 = String::from_utf8(webvtt::write(&t)).unwrap();
+    let t2 = webvtt::parse(out1.as_bytes()).unwrap();
+    let out2 = String::from_utf8(webvtt::write(&t2)).unwrap();
+    assert_eq!(
+        out1, out2,
+        "second-cycle drift:\n=== out1 ===\n{out1}\n=== out2 ===\n{out2}"
+    );
+
+    // Spot-check the key markup pieces survived to the rendered output.
+    for needle in [
+        "<v Alice>",
+        "<i><lang en>playground</lang></i>",
+        "ici à Montpellier",
+        "<c.warn.big>",
+        "<00:00:02.000>",
+        "<ruby>",
+        "<rt>kan</rt>",
+        "<rt>ji</rt>",
+        // The implicit `</rt>` is normalised to explicit on re-emit.
+        "<rt>みん</rt></ruby>",
+    ] {
+        assert!(out1.contains(needle), "missing {needle:?} in:\n{out1}");
+    }
+}
+
+#[test]
+fn cue_payload_language_span_with_bcp47_tag() {
+    // BCP 47 tags often carry a subtag (e.g. `en-GB`, `zh-Hant`). The full
+    // annotation including hyphens / digits must round-trip in the open tag.
+    let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<lang zh-Hant-HK>漢字</lang>\n";
+    let t = webvtt::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(webvtt::write(&t)).unwrap();
+    assert!(out.contains("<lang zh-Hant-HK>"), "{out}");
+    assert!(out.contains("</lang>"), "{out}");
+    assert!(out.contains("漢字"), "{out}");
+}
+
 fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
     for s in segs {
         f(s);

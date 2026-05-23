@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- WebVTT cue payload inline markup (WebVTT §3.5) now has full byte-stable
+  parse/emit round-trip coverage: `<v Speaker>` voice spans preserve the
+  annotation (and `<v>` with no annotation re-emits cleanly); `<c.foo.bar>`
+  class chains keep the full dot-joined name and bare `<c>` no longer
+  re-emits as the invalid `<c.>`; `<lang xx-YY>...</lang>` language spans
+  preserve the BCP 47 annotation including subtag chains like
+  `zh-Hant-HK`; `<ruby>base<rt>annotation</rt></ruby>` ruby spans handle
+  multiple base+rt pairs and tolerate the spec-permitted implicit final
+  `</rt>` (the writer normalises to explicit). A stray `<rt>` outside
+  `<ruby>` is preserved as Raw rather than swallowing the rest of the cue.
+  Covered by 13 new `webvtt::tests::inline_*` unit tests plus
+  `tests/webvtt_parse.rs::cue_payload_inline_markup_round_trips_end_to_end`
+  and `cue_payload_language_span_with_bcp47_tag`.
+- Fixed a latent UTF-8 mishandling bug in the cue-payload inline-text
+  accumulator: previously `text_buf.push(byte as char)` advanced one byte
+  at a time, so a multi-byte codepoint (`à`, `漢`, `みん`, …) adjacent to
+  a tag boundary was emitted as mojibake on the parsed-out side. The
+  accumulator now advances by full UTF-8 codepoints.
 - WebVTT `REGION` definition blocks (WebVTT §4.3) now parse all five
   region settings — `width`, `lines`, `regionanchor`, `viewportanchor`,
   and `scroll` — with case-sensitive names and §6.2 value validation

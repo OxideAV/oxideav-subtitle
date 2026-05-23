@@ -837,7 +837,7 @@ fn format_timing_line_with_extras(cue: &SubtitleCue, extras: Option<&str>) -> St
 
 fn parse_vtt_inline(body: &str) -> Vec<Segment> {
     let mut p = VttParser { src: body, pos: 0 };
-    p.parse_until(None)
+    p.parse_until(None, false)
 }
 
 struct VttParser<'a> {
@@ -846,7 +846,14 @@ struct VttParser<'a> {
 }
 
 impl<'a> VttParser<'a> {
-    fn parse_until(&mut self, stop_tag: Option<&str>) -> Vec<Segment> {
+    /// Parse cue body content up to the matching close tag named `stop_tag`.
+    ///
+    /// `inside_ruby` is `true` when the recursion is anywhere under an open
+    /// `<ruby>` span. Inside ruby, a fresh `<rt>` opening tag or a `</ruby>`
+    /// closing tag both *implicitly* close a pending `<rt>` per WebVTT §3.5
+    /// ("the last end tag string may be omitted") — we rewind so the parent
+    /// scope re-consumes the trigger.
+    fn parse_until(&mut self, stop_tag: Option<&str>, inside_ruby: bool) -> Vec<Segment> {
         let mut out: Vec<Segment> = Vec::new();
         let mut text_buf = String::new();
         let bytes = self.src.as_bytes();
@@ -882,6 +889,21 @@ impl<'a> VttParser<'a> {
                         return out;
                     }
                 }
+                // Implicit-close: a `<rt>` inside ruby has no required end tag;
+                // a fresh `<rt>` opening or a `</ruby>` closing tag rewinds so
+                // the parent <ruby> scope handles it.
+                if stop_tag == Some("rt") && inside_ruby {
+                    let tag_lc = tag.trim().to_ascii_lowercase();
+                    let opens_rt = tag_lc == "rt" || tag_lc.starts_with("rt ");
+                    let closes_ruby = tag_lc == "/ruby";
+                    if opens_rt || closes_ruby {
+                        if !text_buf.is_empty() {
+                            out.push(Segment::Text(std::mem::take(&mut text_buf)));
+                        }
+                        // Do NOT advance self.pos — the parent re-consumes.
+                        return out;
+                    }
+                }
                 // Generic closing tag (e.g. `</c>` outside its own scope).
                 if tag.starts_with('/') {
                     // Skip — we're not under that open tag.
@@ -903,7 +925,7 @@ impl<'a> VttParser<'a> {
                 self.pos += tag_end + 1;
                 match name_lc.as_str() {
                     "b" | "i" | "u" => {
-                        let children = self.parse_until(Some(&name_lc));
+                        let children = self.parse_until(Some(&name_lc), inside_ruby);
                         out.push(match name_lc.as_str() {
                             "b" => Segment::Bold(children),
                             "i" => Segment::Italic(children),
@@ -912,38 +934,81 @@ impl<'a> VttParser<'a> {
                     }
                     "v" => {
                         let speaker = rest.trim().to_string();
-                        let children = self.parse_until(Some("v"));
+                        let children = self.parse_until(Some("v"), inside_ruby);
                         out.push(Segment::Voice {
                             name: speaker,
                             children,
                         });
                     }
                     "c" => {
-                        // `<c.name.other>` — treat dot-separated classes by stacking.
+                        // `<c.name.other>` — the spec allows multiple
+                        // classes; we keep the full dot-joined chain in
+                        // `Segment::Class::name` so the writer can re-emit
+                        // it verbatim. An empty annotation (`<c>`) is also
+                        // accepted and round-trips as a class with empty name.
                         let name = if let Some(stripped) = rest.strip_prefix('.') {
                             stripped.trim().to_string()
                         } else {
                             rest.trim().to_string()
                         };
-                        let children = self.parse_until(Some("c"));
+                        let children = self.parse_until(Some("c"), inside_ruby);
                         out.push(Segment::Class { name, children });
                     }
-                    "lang" | "ruby" | "rt" => {
-                        // We collapse these to their children (good enough for text).
-                        let children = self.parse_until(Some(&name_lc));
-                        // Preserve as Raw wrapper to avoid silent drop of the tag on
-                        // re-emit.
-                        out.push(Segment::Raw(format!("<{}>", tag)));
+                    "ruby" => {
+                        // WebVTT §3.5: ruby span. Children may include zero
+                        // or more `<rt>` annotations; we model the whole
+                        // ruby as a Raw-bracketed flat stream so byte-level
+                        // round-trip is preserved without adding new IR
+                        // variants.
+                        out.push(Segment::Raw("<ruby>".into()));
+                        let children = self.parse_until(Some("ruby"), true);
                         out.extend(children);
-                        out.push(Segment::Raw(format!("</{}>", name_lc)));
+                        out.push(Segment::Raw("</ruby>".into()));
+                    }
+                    "rt" if inside_ruby => {
+                        // Only meaningful inside <ruby>. The end tag is
+                        // optional per §3.5; parse_until handles implicit
+                        // close via the `inside_ruby + stop=rt` rewind.
+                        out.push(Segment::Raw("<rt>".into()));
+                        let children = self.parse_until(Some("rt"), true);
+                        out.extend(children);
+                        out.push(Segment::Raw("</rt>".into()));
+                    }
+                    "lang" => {
+                        // §3.5 language span — the annotation is a BCP 47
+                        // tag. Preserve the full opening tag (with the
+                        // annotation) and the close as Raw wrappers around
+                        // the children so re-emit reproduces the source.
+                        let annot = rest.trim();
+                        let open = if annot.is_empty() {
+                            "<lang>".to_string()
+                        } else {
+                            format!("<lang {}>", annot)
+                        };
+                        out.push(Segment::Raw(open));
+                        let children = self.parse_until(Some("lang"), inside_ruby);
+                        out.extend(children);
+                        out.push(Segment::Raw("</lang>".into()));
+                    }
+                    "rt" => {
+                        // `<rt>` outside `<ruby>` is malformed per §3.5 —
+                        // pass through as Raw so re-emit doesn't drop it.
+                        out.push(Segment::Raw(format!("<{}>", tag)));
                     }
                     _ => {
                         out.push(Segment::Raw(format!("<{}>", tag)));
                     }
                 }
             } else {
-                text_buf.push(byte as char);
-                self.pos += 1;
+                // Advance one full UTF-8 codepoint (the input is &str so
+                // the byte sequence at `self.pos` is a valid char boundary).
+                // Using `byte as char` here would mangle multi-byte chars
+                // (e.g. `à` would land as two Latin-1 bytes).
+                let rest = &self.src[self.pos..];
+                let mut chars = rest.chars();
+                let c = chars.next().expect("non-empty rest");
+                text_buf.push(c);
+                self.pos += c.len_utf8();
             }
         }
         if !text_buf.is_empty() {
@@ -999,7 +1064,13 @@ fn append_segments(segments: &[Segment], out: &mut String) {
                 out.push_str("</v>");
             }
             Segment::Class { name, children } => {
-                out.push_str(&format!("<c.{}>", name));
+                // An empty class name (`<c>` in source) is preserved as
+                // `<c>` — `<c.>` would be a parse error per §3.5.
+                if name.is_empty() {
+                    out.push_str("<c>");
+                } else {
+                    out.push_str(&format!("<c.{}>", name));
+                }
                 append_segments(children, out);
                 out.push_str("</c>");
             }
@@ -1309,5 +1380,134 @@ mod tests {
         let t = parse(src.as_bytes()).unwrap();
         assert!(t.styles.iter().any(|s| s.name == "region:plain"));
         assert!(!t.metadata.iter().any(|(k, _)| k == "vtt_region.plain"));
+    }
+
+    // -------------------------------------------------------------------
+    // Inline cue markup — round-trip coverage for the §3.5 spans.
+
+    fn first_cue_body(src: &str) -> String {
+        let t = parse(src.as_bytes()).unwrap();
+        render_segments(&t.cues[0].segments)
+    }
+
+    #[test]
+    fn inline_bold_italic_underline_round_trip() {
+        let body = "<b>bold</b> <i>it</i> <u>un</u>";
+        let src = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{body}\n");
+        assert_eq!(first_cue_body(&src), body);
+    }
+
+    #[test]
+    fn inline_voice_with_speaker_round_trip() {
+        // The annotation must survive byte-for-byte.
+        let body = "<v Alice>hi <c.yellow>world</c></v>";
+        let src = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{body}\n");
+        assert_eq!(first_cue_body(&src), body);
+    }
+
+    #[test]
+    fn inline_voice_without_annotation_round_trips_as_empty() {
+        // Empty annotation is technically malformed per §3.5 but tolerated;
+        // re-emit as `<v>...</v>` without a spurious space.
+        let body = "<v>anon</v>";
+        let src = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{body}\n");
+        assert_eq!(first_cue_body(&src), body);
+    }
+
+    #[test]
+    fn inline_multi_class_chain_round_trip() {
+        // `<c.foo.bar.baz>` — the full dot chain must round-trip verbatim.
+        let body = "<c.foo.bar.baz>hi</c>";
+        let src = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{body}\n");
+        assert_eq!(first_cue_body(&src), body);
+        // And the chain is exposed structurally on the Class segment.
+        let t = parse(src.as_bytes()).unwrap();
+        match &t.cues[0].segments[0] {
+            Segment::Class { name, .. } => assert_eq!(name, "foo.bar.baz"),
+            other => panic!("expected Class, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inline_bare_c_round_trips_as_c() {
+        // `<c>` with no annotation must NOT re-emit as `<c.>` (which would
+        // be a parse error on the next round-trip).
+        let body = "<c>plain</c>";
+        let src = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{body}\n");
+        assert_eq!(first_cue_body(&src), body);
+    }
+
+    #[test]
+    fn inline_lang_annotation_preserved() {
+        // §3.5: the BCP 47 annotation MUST survive the parse/emit cycle.
+        let body = "Sur les <i><lang en>playground</lang></i>, ici à Montpellier";
+        let src = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{body}\n");
+        assert_eq!(first_cue_body(&src), body);
+    }
+
+    #[test]
+    fn inline_nested_lang_round_trip() {
+        // Nested `<lang>` spans round-trip via Raw-bracket flattening.
+        let body = "<lang en>foo <lang fr>bar</lang> baz</lang>";
+        let src = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{body}\n");
+        assert_eq!(first_cue_body(&src), body);
+    }
+
+    #[test]
+    fn inline_ruby_with_explicit_rt_end_round_trip() {
+        // Canonical ruby: <ruby>base<rt>annotation</rt></ruby>.
+        let body = "<ruby>base<rt>anno</rt></ruby>";
+        let src = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{body}\n");
+        assert_eq!(first_cue_body(&src), body);
+    }
+
+    #[test]
+    fn inline_ruby_with_implicit_rt_end_normalises() {
+        // §3.5: "the last end tag string may be omitted" for <rt>. Our
+        // implicit-close logic must accept the omission and emit a
+        // normalised form with the explicit </rt>.
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<ruby>base<rt>anno</ruby>\n";
+        let body_out = first_cue_body(src);
+        assert_eq!(body_out, "<ruby>base<rt>anno</rt></ruby>");
+        // And the normalised form re-parses to the same tree byte-for-byte.
+        let src2 = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{body_out}\n");
+        assert_eq!(first_cue_body(&src2), body_out);
+    }
+
+    #[test]
+    fn inline_ruby_multiple_rt_pairs_round_trip() {
+        // Multiple base+rt groups inside one ruby span.
+        let body = "<ruby>a<rt>1</rt>b<rt>2</rt></ruby>";
+        let src = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{body}\n");
+        assert_eq!(first_cue_body(&src), body);
+    }
+
+    #[test]
+    fn inline_stray_rt_outside_ruby_is_preserved_as_raw() {
+        // `<rt>` outside `<ruby>` is malformed; the parser passes it
+        // through verbatim instead of recursing into a nonexistent ruby
+        // scope (which would have eaten the rest of the cue).
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhi<rt>x more\n";
+        let body_out = first_cue_body(src);
+        // The text after the stray <rt> must still be there.
+        assert!(body_out.contains("more"), "body: {body_out}");
+        assert!(body_out.starts_with("hi"), "body: {body_out}");
+    }
+
+    #[test]
+    fn inline_timestamp_round_trip() {
+        // Inline `<00:00:01.500>` cue timestamps survive parse/emit.
+        let body = "first<00:00:01.500>second";
+        let src = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{body}\n");
+        assert_eq!(first_cue_body(&src), body);
+    }
+
+    #[test]
+    fn inline_unknown_tag_falls_through_to_raw() {
+        // Unknown tags survive as a Raw passthrough so re-emit is faithful.
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<custom>x\n";
+        let body_out = first_cue_body(src);
+        assert!(body_out.contains("<custom>"), "body: {body_out}");
+        assert!(body_out.contains('x'), "body: {body_out}");
     }
 }

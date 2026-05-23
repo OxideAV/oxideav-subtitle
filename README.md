@@ -104,6 +104,34 @@ the numeric offset / size / align for downstream consumers either way.
 The single-cue packet codec path (`cue_to_bytes` / `bytes_to_cue`) has
 no track context, so these extras are a track-level write feature.
 
+## WebVTT cue payload inline markup
+
+The §3.5 cue components are parsed into the structured `Segment` tree and
+re-emitted byte-stably:
+
+* `<b>` / `<i>` / `<u>` — bold / italic / underline.
+* `<v Speaker>...</v>` — voice span; the annotation rides on
+  `Segment::Voice::name` and survives the round-trip. `<v>` with no
+  annotation is also tolerated and re-emits without a spurious space.
+* `<c.class.chain>...</c>` — class span; the full dot-chain (e.g.
+  `<c.foo.bar.baz>`) is kept as one `Segment::Class::name`. Bare `<c>`
+  (no annotation) round-trips as `<c>` rather than the invalid `<c.>`.
+* `<lang xx-YY>...</lang>` — language span; the BCP 47 annotation
+  (including subtag chains like `zh-Hant-HK`) is preserved verbatim.
+  Nested `<lang>` spans round-trip through Raw-bracket flattening.
+* `<ruby>base<rt>annotation</rt></ruby>` — ruby spans, including
+  multiple base+rt pairs in a single `<ruby>`. Per §3.5 the final
+  `</rt>` may be omitted; the parser handles the implicit close and
+  the writer normalises to explicit `</rt>`.
+* `<00:00:01.500>` — inline cue timestamp.
+* Any other tag falls through to `Segment::Raw` so a re-emit to WebVTT
+  is faithful.
+
+A latent UTF-8 bug in the inline text accumulator was fixed in the same
+change: previously a multi-byte codepoint (`à`, `漢`, etc.) in cue text
+adjacent to a tag boundary was sliced byte-by-byte and re-emitted as
+mojibake; the accumulator now advances by full codepoints.
+
 ## WebVTT REGION blocks
 
 `REGION` definition blocks (WebVTT §4.3) are parsed for all five region
