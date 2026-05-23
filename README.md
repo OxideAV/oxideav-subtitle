@@ -84,6 +84,26 @@ this path.
 The bitmap-font path is unaffected by these and continues to honour
 bold / italic / per-run colour as before.
 
+## WebVTT cue settings
+
+The WebVTT timing line's cue settings (WebVTT §3.5) are parsed into the
+unified `CuePosition` where they fit — `position`, `line`, `size`, and
+`align`. The settings the IR has no field for are preserved verbatim
+through a parse → write round-trip via per-cue `vtt_cue_extra.<idx>`
+track metadata:
+
+* `vertical:rl` / `vertical:lr` — vertical writing direction.
+* the `,start` / `,center` / `,end` alignment suffix on `line`.
+* the `,line-left` / `,center` / `,line-right` suffix on `position`.
+* a `region:<id>` reference.
+
+A `line` offset given as a bare (possibly negative) line number is kept
+distinct from a percentage offset, so `line:-1` survives without
+acquiring a spurious `%`. The structured `CuePosition` keeps carrying
+the numeric offset / size / align for downstream consumers either way.
+The single-cue packet codec path (`cue_to_bytes` / `bytes_to_cue`) has
+no track context, so these extras are a track-level write feature.
+
 ## Input encoding tolerance
 
 Every text-subtitle parser in this crate routes its raw bytes through

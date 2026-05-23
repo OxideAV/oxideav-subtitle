@@ -99,6 +99,37 @@ fn write_roundtrips_signatures() {
     }
 }
 
+#[test]
+fn roundtrips_cue_settings_the_ir_cannot_model() {
+    // WebVTT §3.5 settings beyond what `CuePosition` carries: the vertical
+    // writing direction, the `line`/`position` alignment suffixes, and a
+    // region reference. These survive a parse → write → parse cycle via the
+    // per-cue `vtt_cue_extra.<idx>` metadata channel.
+    let src = "WEBVTT\n\n\
+        00:00:01.000 --> 00:00:02.000 vertical:lr line:75%,center position:40%,line-right align:end\n\
+        vertical cue\n\n\
+        00:00:03.000 --> 00:00:04.000 line:-2\n\
+        bottom line\n";
+    let t = oxideav_subtitle::webvtt::parse(src.as_bytes()).unwrap();
+    let out = String::from_utf8(oxideav_subtitle::webvtt::write(&t)).unwrap();
+    assert!(out.contains("vertical:lr"), "{out}");
+    assert!(out.contains("line:75%,center"), "{out}");
+    assert!(out.contains("position:40%,line-right"), "{out}");
+    assert!(out.contains("align:end"), "{out}");
+    // Bare line number stays a line number (no spurious `%`).
+    assert!(
+        out.contains("line:-2") && !out.contains("line:-2%"),
+        "{out}"
+    );
+
+    // Re-parse keeps the structured offsets intact.
+    let t2 = oxideav_subtitle::webvtt::parse(out.as_bytes()).unwrap();
+    let p0 = t2.cues[0].positioning.as_ref().unwrap();
+    assert_eq!(p0.x, Some(40.0));
+    assert_eq!(p0.y, Some(75.0));
+    assert_eq!(t2.cues[1].positioning.as_ref().unwrap().y, Some(-2.0));
+}
+
 fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
     for s in segs {
         f(s);

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- WebVTT cue settings the unified IR can't model are now preserved
+  through a parse → write round-trip: the `vertical:rl|lr` writing
+  direction, the `,start|,center|,end` alignment suffix on `line`, the
+  `,line-left|,center|,line-right` suffix on `position`, and a
+  `region:<id>` reference (WebVTT §3.5). They ride alongside the cue in
+  per-cue `vtt_cue_extra.<idx>` track metadata, so the structured
+  `CuePosition` (offset / size / align) keeps working unchanged while
+  the full settings list survives. A `line` offset given as a bare
+  (possibly negative) line number is now distinguished from a percentage
+  offset and re-emitted without a spurious `%`.
 - New crate-private `encoding` module with a `decode_subtitle_text`
   helper that sniffs UTF-8 / UTF-16 LE / UTF-16 BE BOMs and normalises
   CRLF / lone-CR line endings to LF. Every parser (SRT, WebVTT,

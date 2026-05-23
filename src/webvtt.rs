@@ -157,15 +157,56 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
         }
     }
 
-    for cue in &track.cues {
+    for (idx, cue) in track.cues.iter().enumerate() {
+        let extras = track
+            .metadata
+            .iter()
+            .find(|(k, _)| k.strip_prefix("vtt_cue_extra.") == Some(idx.to_string().as_str()))
+            .map(|(_, v)| v.as_str());
         out.push('\n');
-        out.push_str(&format_timing_line(cue));
+        out.push_str(&format_timing_line_with_extras(cue, extras));
         out.push('\n');
         out.push_str(&render_segments(&cue.segments));
         out.push('\n');
     }
 
     out.into_bytes()
+}
+
+/// Parsed view of the per-cue `vtt_cue_extra.<idx>` metadata string. Carries
+/// the WebVTT §3.5 settings the IR can't model so the writer can re-emit
+/// them: vertical direction, the line/position alignment suffixes, and the
+/// region reference.
+#[derive(Default)]
+struct CueExtras {
+    vertical: Option<String>,
+    /// True when the `line` offset is a percentage (re-attach `%`); false when
+    /// it is a line number. Defaults to `false`, but the writer treats a
+    /// non-integer / non-negative offset with no recorded flag as a percentage
+    /// for back-compat with cues that carry positioning but no extras.
+    line_is_pct: bool,
+    line_align: Option<String>,
+    position_align: Option<String>,
+    region: Option<String>,
+}
+
+fn parse_cue_extras(s: &str) -> CueExtras {
+    let mut e = CueExtras::default();
+    for tok in s.split_whitespace() {
+        let (k, v) = match tok.split_once(':') {
+            Some(kv) => kv,
+            None => continue,
+        };
+        match k {
+            "vertical" => e.vertical = Some(v.to_string()),
+            "line-pct" => e.line_is_pct = v == "1",
+            "line-align" => e.line_align = Some(v.to_string()),
+            "position-align" => e.position_align = Some(v.to_string()),
+            "region" => e.region = Some(v.to_string()),
+            _ => {}
+        }
+    }
+    e
 }
 
 fn split_blocks<'a>(lines: &'a [&'a str]) -> Vec<Vec<&'a str>> {
@@ -349,7 +390,7 @@ fn parse_cue_block(block: &[&str], track: &mut SubtitleTrack) {
         (block[1], 2)
     };
 
-    let (start_us, end_us, position) = match parse_timing_and_settings(timing_line) {
+    let parsed = match parse_timing_full(timing_line) {
         Some(v) => v,
         None => return,
     };
@@ -357,16 +398,49 @@ fn parse_cue_block(block: &[&str], track: &mut SubtitleTrack) {
     let body_lines: Vec<&str> = block.iter().skip(skip_first).copied().collect();
     let body = body_lines.join("\n");
     let segments = parse_vtt_inline(&body);
+    let cue_idx = track.cues.len();
+    // `CuePosition` can carry `position`/`line`/`size`/`align`, but the
+    // WebVTT §3.5 settings list also admits `vertical:rl|lr`, an optional
+    // `,start|,center|,end` alignment suffix on `line`, a
+    // `,line-left|,center|,line-right` suffix on `position`, and a
+    // `region:<id>` reference — none of which have a home in the IR. We
+    // stash those verbatim, keyed by cue index, so the track-level writer
+    // can re-emit them faithfully.
+    if !parsed.extras.is_empty() {
+        track
+            .metadata
+            .push((format!("vtt_cue_extra.{cue_idx}"), parsed.extras));
+    }
     track.cues.push(SubtitleCue {
-        start_us,
-        end_us,
+        start_us: parsed.start_us,
+        end_us: parsed.end_us,
         style_ref: None,
-        positioning: position,
+        positioning: parsed.position,
         segments,
     });
 }
 
+/// Outcome of parsing a `... --> ...` timing line plus its trailing cue
+/// settings (WebVTT §3.5).
+struct ParsedTiming {
+    start_us: i64,
+    end_us: i64,
+    /// Structured positioning the IR can model: `position`/`line`/`size`/`align`.
+    position: Option<CuePosition>,
+    /// Cue settings the IR cannot model, captured verbatim in spec order so
+    /// the track writer can re-append them. Holds `vertical:rl|lr`, the
+    /// `,start|,center|,end` alignment suffix on `line`, the
+    /// `,line-left|,center|,line-right` suffix on `position`, and any
+    /// `region:<id>` reference. Space-separated, no leading space.
+    extras: String,
+}
+
 fn parse_timing_and_settings(line: &str) -> Option<(i64, i64, Option<CuePosition>)> {
+    let p = parse_timing_full(line)?;
+    Some((p.start_us, p.end_us, p.position))
+}
+
+fn parse_timing_full(line: &str) -> Option<ParsedTiming> {
     let mid = line.find("-->")?;
     let (l, r) = line.split_at(mid);
     let rest = &r[3..];
@@ -381,29 +455,57 @@ fn parse_timing_and_settings(line: &str) -> Option<(i64, i64, Option<CuePosition
     let end_us = parse_vtt_timestamp(rhs_ts)?;
 
     let mut pos: Option<CuePosition> = None;
+    // Unmodeled settings, gathered in spec order regardless of the order they
+    // appeared in the source so re-emission is canonical: vertical, line
+    // alignment suffix, position alignment suffix, region.
+    let mut vertical: Option<&str> = None;
+    let mut line_suffix: Option<String> = None;
+    let mut line_is_pct = false;
+    let mut position_suffix: Option<String> = None;
+    let mut region: Option<&str> = None;
     for setting in parts.iter().skip(1) {
         let (k, v) = match setting.split_once(':') {
             Some(kv) => kv,
             None => continue,
         };
         let k_lc = k.to_ascii_lowercase();
-        let cp = pos.get_or_insert_with(CuePosition::default);
         match k_lc.as_str() {
             "line" => {
-                let num: String = v
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit() || *c == '.')
-                    .collect();
-                cp.y = num.parse::<f32>().ok();
+                let cp = pos.get_or_insert_with(CuePosition::default);
+                // `line:<offset>[,<align>]` — `<offset>` is a percentage or a
+                // (possibly negative) line number; the IR holds the numeric
+                // offset in `y`, but loses whether a `%` was present and the
+                // alignment suffix, so both go to `extras`.
+                let (offset, suffix) = split_setting_suffix(v);
+                cp.y = parse_signed_number(offset);
+                if offset.contains('%') {
+                    line_is_pct = true;
+                }
+                if let Some(s) = suffix {
+                    if matches!(s.to_ascii_lowercase().as_str(), "start" | "center" | "end") {
+                        line_suffix = Some(s.to_ascii_lowercase());
+                    }
+                }
             }
             "position" => {
-                let num: String = v
+                let cp = pos.get_or_insert_with(CuePosition::default);
+                let (offset, suffix) = split_setting_suffix(v);
+                let num: String = offset
                     .chars()
                     .take_while(|c| c.is_ascii_digit() || *c == '.')
                     .collect();
                 cp.x = num.parse::<f32>().ok();
+                if let Some(s) = suffix {
+                    if matches!(
+                        s.to_ascii_lowercase().as_str(),
+                        "line-left" | "center" | "line-right"
+                    ) {
+                        position_suffix = Some(s.to_ascii_lowercase());
+                    }
+                }
             }
             "size" => {
+                let cp = pos.get_or_insert_with(CuePosition::default);
                 let num: String = v
                     .chars()
                     .take_while(|c| c.is_ascii_digit() || *c == '.')
@@ -411,6 +513,7 @@ fn parse_timing_and_settings(line: &str) -> Option<(i64, i64, Option<CuePosition
                 cp.size = num.parse::<f32>().ok();
             }
             "align" => {
+                let cp = pos.get_or_insert_with(CuePosition::default);
                 cp.align = match v.to_ascii_lowercase().as_str() {
                     "start" => TextAlign::Start,
                     "middle" | "center" => TextAlign::Center,
@@ -420,11 +523,83 @@ fn parse_timing_and_settings(line: &str) -> Option<(i64, i64, Option<CuePosition
                     _ => TextAlign::Start,
                 };
             }
+            "vertical" => {
+                let v_lc = v.to_ascii_lowercase();
+                if v_lc == "rl" {
+                    vertical = Some("rl");
+                } else if v_lc == "lr" {
+                    vertical = Some("lr");
+                }
+            }
+            "region" if !v.is_empty() => {
+                region = Some(v);
+            }
             _ => {}
         }
     }
 
-    Some((start_us, end_us, pos))
+    let mut extras = String::new();
+    if let Some(v) = vertical {
+        push_setting(&mut extras, &format!("vertical:{v}"));
+    }
+    // The `y` offset is a line number unless the source carried a `%`. Record
+    // the percentage flag (1 = percentage, 0 = bare line number) whenever a
+    // `line` offset is present so the writer re-attaches `%` correctly and
+    // doesn't fall back to its programmatic-cue percentage default.
+    if pos.as_ref().and_then(|p| p.y).is_some() {
+        push_setting(
+            &mut extras,
+            if line_is_pct {
+                "line-pct:1"
+            } else {
+                "line-pct:0"
+            },
+        );
+    }
+    if let Some(s) = &line_suffix {
+        push_setting(&mut extras, &format!("line-align:{s}"));
+    }
+    if let Some(s) = &position_suffix {
+        push_setting(&mut extras, &format!("position-align:{s}"));
+    }
+    if let Some(r) = region {
+        push_setting(&mut extras, &format!("region:{r}"));
+    }
+
+    Some(ParsedTiming {
+        start_us,
+        end_us,
+        position: pos,
+        extras,
+    })
+}
+
+/// Split a cue-setting value into its leading value and an optional
+/// `,<suffix>` alignment component (WebVTT §3.5 line/position settings).
+fn split_setting_suffix(v: &str) -> (&str, Option<&str>) {
+    match v.split_once(',') {
+        Some((head, tail)) => (head, Some(tail)),
+        None => (v, None),
+    }
+}
+
+/// Parse a `line` offset: a percentage or a (possibly negative) line number.
+fn parse_signed_number(s: &str) -> Option<f32> {
+    let neg = s.starts_with('-');
+    let body = s.strip_prefix('-').unwrap_or(s);
+    let num: String = body
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let val = num.parse::<f32>().ok()?;
+    Some(if neg { -val } else { val })
+}
+
+fn push_setting(buf: &mut String, item: &str) {
+    if !buf.is_empty() {
+        buf.push(' ');
+    }
+    buf.push_str(item);
 }
 
 /// Parse `HH:MM:SS.mmm` or `MM:SS.mmm` into microseconds.
@@ -468,20 +643,52 @@ fn format_vtt_ts(us: i64) -> String {
 }
 
 fn format_timing_line(cue: &SubtitleCue) -> String {
+    format_timing_line_with_extras(cue, None)
+}
+
+/// Render the `start --> end` timing line plus cue settings. `extras` carries
+/// the unmodeled WebVTT §3.5 settings (vertical / line-align / position-align
+/// / region) captured at parse time, keyed off `track.metadata`. Settings are
+/// emitted in spec order: vertical, line, position, size, align, region.
+fn format_timing_line_with_extras(cue: &SubtitleCue, extras: Option<&str>) -> String {
+    let had_extras = extras.is_some();
+    let extras = extras.map(parse_cue_extras).unwrap_or_default();
     let mut s = format!(
         "{} --> {}",
         format_vtt_ts(cue.start_us),
         format_vtt_ts(cue.end_us)
     );
+    if let Some(v) = &extras.vertical {
+        s.push_str(&format!(" vertical:{v}"));
+    }
     if let Some(p) = &cue.positioning {
-        if let Some(x) = p.x {
-            s.push_str(&format!(" position:{}%", x));
-        }
         if let Some(y) = p.y {
-            s.push_str(&format!(" line:{}%", y));
+            // The `line` offset is a percentage or a (possibly negative) line
+            // number. We re-attach `%` when the source carried it
+            // (`line_is_pct`), or — for back-compat with cues that have
+            // positioning but no parsed extras — when the value isn't an
+            // integer line number.
+            let as_pct = extras.line_is_pct || !had_extras || y.fract() != 0.0;
+            s.push_str(" line:");
+            if as_pct {
+                s.push_str(&format!("{y}%"));
+            } else {
+                s.push_str(&format!("{}", y as i64));
+            }
+            if let Some(a) = &extras.line_align {
+                s.push(',');
+                s.push_str(a);
+            }
+        }
+        if let Some(x) = p.x {
+            s.push_str(&format!(" position:{x}%"));
+            if let Some(a) = &extras.position_align {
+                s.push(',');
+                s.push_str(a);
+            }
         }
         if let Some(sz) = p.size {
-            s.push_str(&format!(" size:{}%", sz));
+            s.push_str(&format!(" size:{sz}%"));
         }
         match p.align {
             TextAlign::Center => s.push_str(" align:center"),
@@ -490,6 +697,9 @@ fn format_timing_line(cue: &SubtitleCue) -> String {
             TextAlign::Right => s.push_str(" align:right"),
             TextAlign::Start => {}
         }
+    }
+    if let Some(r) = &extras.region {
+        s.push_str(&format!(" region:{r}"));
     }
     s
 }
@@ -818,5 +1028,71 @@ mod tests {
     fn looks_like() {
         assert!(looks_like_webvtt(b"WEBVTT\n"));
         assert!(!looks_like_webvtt(b"1\n00:00:01,000"));
+    }
+
+    #[test]
+    fn parses_vertical_setting() {
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000 vertical:rl\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert!(t
+            .metadata
+            .iter()
+            .any(|(k, v)| k == "vtt_cue_extra.0" && v.contains("vertical:rl")));
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(out.contains("vertical:rl"), "round-trip: {out}");
+    }
+
+    #[test]
+    fn roundtrips_line_position_align_suffixes() {
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000 line:80%,end position:30%,line-left align:start\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let extra = t
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_cue_extra.0")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert!(extra.contains("line-align:end"), "extras: {extra}");
+        assert!(
+            extra.contains("position-align:line-left"),
+            "extras: {extra}"
+        );
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(out.contains("line:80%,end"), "round-trip: {out}");
+        assert!(out.contains("position:30%,line-left"), "round-trip: {out}");
+    }
+
+    #[test]
+    fn roundtrips_negative_line_number() {
+        // A bare (non-percentage) negative line number must survive without a
+        // spurious `%`.
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000 line:-1\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues[0].positioning.as_ref().unwrap().y, Some(-1.0));
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(
+            out.contains("line:-1\n") || out.contains("line:-1 "),
+            "round-trip: {out}"
+        );
+        assert!(
+            !out.contains("line:-1%"),
+            "negative line number must not gain %: {out}"
+        );
+    }
+
+    #[test]
+    fn roundtrips_region_reference() {
+        let src = "WEBVTT\n\nREGION\nid:fred\nwidth:40%\n\n00:00:01.000 --> 00:00:02.000 region:fred align:start\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(out.contains("region:fred"), "round-trip: {out}");
+    }
+
+    #[test]
+    fn percentage_line_keeps_percent() {
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000 line:90%\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(out.contains("line:90%"), "round-trip: {out}");
     }
 }
