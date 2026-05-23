@@ -78,8 +78,19 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
             continue;
         }
         if first_lc == "region" {
-            if let Some(region) = parse_region_block(&block[1..]) {
-                track.styles.push(region);
+            if let Some((region, settings)) = parse_region_block(&block[1..]) {
+                // The IR's `SubtitleStyle` has no home for the WebVTT §4.3
+                // region geometry (`lines`, `regionanchor`, `viewportanchor`,
+                // `scroll`) — and even `width` is lossily clamped to an integer
+                // in `margin_r`. Capture the full settings list verbatim, keyed
+                // by region id, so the synthesised (no-extradata) write path can
+                // rebuild a complete REGION block. Mirrors `vtt_cue_extra.<idx>`.
+                if !settings.is_empty() {
+                    track
+                        .metadata
+                        .push((format!("vtt_region.{}", region.id), settings));
+                }
+                track.styles.push(region.style);
             }
             extradata.push('\n');
             for line in block {
@@ -118,11 +129,34 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
         }
         out.push('\n');
 
+        // Re-emit REGION blocks from the styles table. A region style is named
+        // `region:<id>`; its full §4.3 settings (width / lines / regionanchor /
+        // viewportanchor / scroll) were captured at parse time in the
+        // `vtt_region.<id>` metadata channel, since the IR `SubtitleStyle` has
+        // no fields for them. Rebuild a complete block here.
+        for s in &track.styles {
+            let Some(id) = s.name.strip_prefix("region:") else {
+                continue;
+            };
+            out.push_str("\nREGION\n");
+            out.push_str(&format!("id:{id}\n"));
+            if let Some(settings) = track
+                .metadata
+                .iter()
+                .find(|(k, _)| k.strip_prefix("vtt_region.") == Some(id))
+                .map(|(_, v)| v.as_str())
+            {
+                for setting in settings.split_whitespace() {
+                    out.push_str(setting);
+                    out.push('\n');
+                }
+            }
+        }
+
         // Re-emit STYLE blocks.
         for s in &track.styles {
-            // Skip any styles whose name looks region-ish (starts with
-            // `region:`) — those were produced by a WebVTT REGION block
-            // and we don't round-trip them here.
+            // Region styles are handled above; STYLE blocks only carry
+            // `::cue(...)` rules, never regions.
             if s.name.starts_with("region:") {
                 continue;
             }
@@ -345,22 +379,57 @@ fn apply_css_prop(style: &mut SubtitleStyle, key: &str, val: &str) {
     }
 }
 
-fn parse_region_block(lines: &[&str]) -> Option<SubtitleStyle> {
+/// A parsed WebVTT REGION definition block: the IR `SubtitleStyle` we surface
+/// in `track.styles` plus the raw region `id` so the writer can key the block.
+struct ParsedRegion {
+    id: String,
+    style: SubtitleStyle,
+}
+
+/// Parse a WebVTT region definition block (the lines after the `REGION` line).
+///
+/// Per WebVTT §6.2 the region settings are collected by splitting each line on
+/// spaces (a region block is conventionally one setting per line, but the spec
+/// permits multiple settings on a line), matching the **case-sensitive** names
+/// `id` / `width` / `lines` / `regionanchor` / `viewportanchor` / `scroll`, and
+/// validating each value (percentages must be `0..=100` with a trailing `%`;
+/// `lines` is ASCII digits only; `scroll` must be exactly `up`; the two anchor
+/// settings are `<pct>,<pct>` tuples). Malformed values are dropped per spec.
+fn parse_region_block(lines: &[&str]) -> Option<(ParsedRegion, String)> {
     let mut id = String::new();
-    let mut width = None;
+    let mut width: Option<f32> = None;
+    let mut region_lines: Option<u32> = None;
+    let mut region_anchor: Option<(f32, f32)> = None;
+    let mut viewport_anchor: Option<(f32, f32)> = None;
+    let mut scroll = false;
+    // The spec splits on spaces, not on lines, so handle either layout.
     for line in lines {
-        let line = line.trim();
-        if let Some((k, v)) = line.split_once(':') {
-            let k = k.trim().to_ascii_lowercase();
-            let v = v.trim();
-            match k.as_str() {
-                "id" => id = v.to_string(),
+        for setting in line.split_whitespace() {
+            let (name, value) = match setting.split_once(':') {
+                // §6.2: skip if the colon is the first or last char (empty
+                // name or empty value).
+                Some((n, v)) if !n.is_empty() && !v.is_empty() => (n, v),
+                _ => continue,
+            };
+            // §6.2 names are case-sensitive matches.
+            match name {
+                "id" => id = value.to_string(),
                 "width" => {
-                    let num: String = v
-                        .chars()
-                        .take_while(|c| c.is_ascii_digit() || *c == '.')
-                        .collect();
-                    width = num.parse::<f32>().ok();
+                    if let Some(p) = parse_region_percentage(value) {
+                        width = Some(p);
+                    }
+                }
+                "lines" if value.bytes().all(|b| b.is_ascii_digit()) => {
+                    region_lines = value.parse::<u32>().ok();
+                }
+                "regionanchor" => {
+                    region_anchor = parse_anchor_tuple(value);
+                }
+                "viewportanchor" => {
+                    viewport_anchor = parse_anchor_tuple(value);
+                }
+                "scroll" if value == "up" => {
+                    scroll = true;
                 }
                 _ => {}
             }
@@ -369,12 +438,71 @@ fn parse_region_block(lines: &[&str]) -> Option<SubtitleStyle> {
     if id.is_empty() {
         return None;
     }
-    let mut s = SubtitleStyle::new(format!("region:{id}"));
+    let mut style = SubtitleStyle::new(format!("region:{id}"));
     if let Some(w) = width {
-        // Stash the width into margin_r as a rough hint.
-        s.margin_r = Some(w as i32);
+        // Stash the width into margin_r as a rough integer hint for the IR; the
+        // verbatim percentage survives in the settings string for round-trip.
+        style.margin_r = Some(w as i32);
     }
-    Some(s)
+
+    // Re-serialise the captured settings in canonical (spec) order so a
+    // re-emitted REGION block is stable across round-trips.
+    let mut settings = String::new();
+    if let Some(w) = width {
+        push_setting(&mut settings, &format!("width:{}", fmt_pct(w)));
+    }
+    if let Some(l) = region_lines {
+        push_setting(&mut settings, &format!("lines:{l}"));
+    }
+    if let Some((x, y)) = region_anchor {
+        push_setting(
+            &mut settings,
+            &format!("regionanchor:{},{}", fmt_pct(x), fmt_pct(y)),
+        );
+    }
+    if let Some((x, y)) = viewport_anchor {
+        push_setting(
+            &mut settings,
+            &format!("viewportanchor:{},{}", fmt_pct(x), fmt_pct(y)),
+        );
+    }
+    if scroll {
+        push_setting(&mut settings, "scroll:up");
+    }
+
+    Some((ParsedRegion { id, style }, settings))
+}
+
+/// Parse a WebVTT percentage (`<digits>[.<digits>]%`, range 0..=100) per §6.2's
+/// "rules to parse a percentage string"; returns the numeric value (no `%`).
+fn parse_region_percentage(s: &str) -> Option<f32> {
+    let body = s.strip_suffix('%')?;
+    if body.is_empty() {
+        return None;
+    }
+    let val: f32 = body.parse().ok()?;
+    if (0.0..=100.0).contains(&val) {
+        Some(val)
+    } else {
+        None
+    }
+}
+
+/// Parse a `<pct>,<pct>` anchor tuple; both components must be valid
+/// percentages (§6.2 regionanchor / viewportanchor).
+fn parse_anchor_tuple(v: &str) -> Option<(f32, f32)> {
+    let (x, y) = v.split_once(',')?;
+    Some((parse_region_percentage(x)?, parse_region_percentage(y)?))
+}
+
+/// Format a percentage value back with its `%` suffix, dropping a trailing
+/// `.0` so whole percentages re-emit as integers (`40%`, not `40.0%`).
+fn fmt_pct(v: f32) -> String {
+    if v.fract() == 0.0 {
+        format!("{}%", v as i64)
+    } else {
+        format!("{v}%")
+    }
 }
 
 fn parse_cue_block(block: &[&str], track: &mut SubtitleTrack) {
@@ -1094,5 +1222,92 @@ mod tests {
         let t = parse(src.as_bytes()).unwrap();
         let out = String::from_utf8(write(&t)).unwrap();
         assert!(out.contains("line:90%"), "round-trip: {out}");
+    }
+
+    #[test]
+    fn parses_full_region_settings() {
+        let src = "WEBVTT\n\nREGION\nid:fred\nwidth:40%\nlines:3\nregionanchor:0%,100%\nviewportanchor:10%,90%\nscroll:up\n\n00:00:01.000 --> 00:00:02.000 region:fred\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        // The region style is surfaced.
+        assert!(t.styles.iter().any(|s| s.name == "region:fred"));
+        // All five §4.3 settings captured verbatim in spec order.
+        let settings = t
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_region.fred")
+            .map(|(_, v)| v.as_str())
+            .expect("region settings captured");
+        assert_eq!(
+            settings,
+            "width:40% lines:3 regionanchor:0%,100% viewportanchor:10%,90% scroll:up"
+        );
+    }
+
+    #[test]
+    fn region_settings_survive_synthesised_write() {
+        // Re-emit through the synthesised (no-extradata) path: drop the
+        // extradata so `write` rebuilds the REGION block from styles + metadata.
+        let src = "WEBVTT\n\nREGION\nid:r1\nwidth:50%\nlines:4\nregionanchor:0%,100%\nviewportanchor:25%,75%\nscroll:up\n\n00:00:01.000 --> 00:00:02.000 region:r1\nhi\n";
+        let mut t = parse(src.as_bytes()).unwrap();
+        t.extradata.clear();
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(out.contains("REGION\n"), "{out}");
+        assert!(out.contains("id:r1\n"), "{out}");
+        assert!(out.contains("width:50%\n"), "{out}");
+        assert!(out.contains("lines:4\n"), "{out}");
+        assert!(out.contains("regionanchor:0%,100%\n"), "{out}");
+        assert!(out.contains("viewportanchor:25%,75%\n"), "{out}");
+        assert!(out.contains("scroll:up\n"), "{out}");
+
+        // And the rebuilt block re-parses to the same settings.
+        let t2 = parse(out.as_bytes()).unwrap();
+        let s2 = t2
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_region.r1")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_eq!(
+            s2,
+            "width:50% lines:4 regionanchor:0%,100% viewportanchor:25%,75% scroll:up"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_region_settings() {
+        // Per §6.2: out-of-range / non-digit / non-`up` values are dropped, but
+        // a valid sibling setting on the same block still parses.
+        let src = "WEBVTT\n\nREGION\nid:bad\nwidth:150%\nlines:3x\nregionanchor:0%\nscroll:down\nviewportanchor:5%,5%\n\n00:00:01.000 --> 00:00:02.000 region:bad\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let settings = t
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_region.bad")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        // Only the well-formed viewportanchor survives.
+        assert_eq!(settings, "viewportanchor:5%,5%");
+    }
+
+    #[test]
+    fn region_settings_are_case_sensitive() {
+        // §6.2 names are case-sensitive — `WIDTH` / `Scroll` must not match.
+        let src = "WEBVTT\n\nREGION\nid:cs\nWIDTH:40%\nScroll:up\nlines:2\n\n00:00:01.000 --> 00:00:02.000 region:cs\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let settings = t
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_region.cs")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_eq!(settings, "lines:2");
+    }
+
+    #[test]
+    fn id_only_region_has_no_settings_metadata() {
+        let src = "WEBVTT\n\nREGION\nid:plain\n\n00:00:01.000 --> 00:00:02.000 region:plain\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert!(t.styles.iter().any(|s| s.name == "region:plain"));
+        assert!(!t.metadata.iter().any(|(k, _)| k == "vtt_region.plain"));
     }
 }

@@ -104,6 +104,27 @@ the numeric offset / size / align for downstream consumers either way.
 The single-cue packet codec path (`cue_to_bytes` / `bytes_to_cue`) has
 no track context, so these extras are a track-level write feature.
 
+## WebVTT REGION blocks
+
+`REGION` definition blocks (WebVTT §4.3) are parsed for all five region
+settings: `width`, `lines`, `regionanchor`, `viewportanchor`, and
+`scroll`. Names are matched **case-sensitively** and each value is
+validated per the §6.2 algorithm — percentages must carry a `%` and lie
+in `0..=100`, `lines` is ASCII digits only, the two anchors are
+`<pct>,<pct>` tuples, and `scroll` must be exactly `up`; malformed
+values are dropped.
+
+The region surfaces in `track.styles` as a `region:<id>` style (with
+`width` mirrored into `margin_r` as a rough integer hint). Because the
+unified `SubtitleStyle` has no fields for the geometry settings, the
+full settings list is captured verbatim — re-serialised in canonical
+spec order — in a per-region `vtt_region.<id>` track-metadata entry.
+When a track carries verbatim parse extradata the original REGION block
+round-trips byte-for-byte; when the track was built programmatically (no
+extradata) the writer reconstructs a complete REGION block from the
+style + `vtt_region.<id>` metadata, so all five settings survive the
+synthesised write path too.
+
 ## Input encoding tolerance
 
 Every text-subtitle parser in this crate routes its raw bytes through

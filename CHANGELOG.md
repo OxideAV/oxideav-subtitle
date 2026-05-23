@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- WebVTT `REGION` definition blocks (WebVTT §4.3) now parse all five
+  region settings — `width`, `lines`, `regionanchor`, `viewportanchor`,
+  and `scroll` — with case-sensitive names and §6.2 value validation
+  (percentages `0..=100` with a `%`, `lines` digits-only, anchors as
+  `<pct>,<pct>` tuples, `scroll:up` only); malformed values are dropped.
+  Previously only `id` + `width` were read and the rest were lost on the
+  synthesised write path. The geometry settings the IR `SubtitleStyle`
+  can't model are captured verbatim (re-serialised in canonical spec
+  order) in a per-region `vtt_region.<id>` track-metadata entry, and the
+  writer rebuilds a complete REGION block from style + metadata when the
+  track has no verbatim parse extradata, so all five settings round-trip
+  through the synthesised path. Covered by 6 new webvtt unit tests plus
+  `tests/webvtt_parse.rs::full_region_block_round_trips_through_synthesised_write`.
 - WebVTT cue settings the unified IR can't model are now preserved
   through a parse → write round-trip: the `vertical:rl|lr` writing
   direction, the `,start|,center|,end` alignment suffix on `line`, the

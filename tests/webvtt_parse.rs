@@ -130,6 +130,54 @@ fn roundtrips_cue_settings_the_ir_cannot_model() {
     assert_eq!(t2.cues[1].positioning.as_ref().unwrap().y, Some(-2.0));
 }
 
+#[test]
+fn full_region_block_round_trips_through_synthesised_write() {
+    // WebVTT §4.3 REGION settings (`lines` / `regionanchor` / `viewportanchor`
+    // / `scroll`) the IR `SubtitleStyle` can't model are captured per-region
+    // and rebuilt by the synthesised (no-extradata) writer.
+    let src = "WEBVTT\n\n\
+        REGION\n\
+        id:bottom\n\
+        width:60%\n\
+        lines:3\n\
+        regionanchor:0%,100%\n\
+        viewportanchor:50%,90%\n\
+        scroll:up\n\n\
+        00:00:01.000 --> 00:00:02.000 region:bottom\n\
+        hi\n";
+    let mut t = webvtt::parse(src.as_bytes()).unwrap();
+    assert!(t.styles.iter().any(|s| s.name == "region:bottom"));
+    assert!(t.metadata.iter().any(|(k, _)| k == "vtt_region.bottom"));
+
+    // Force the synthesised path: drop the verbatim extradata.
+    t.extradata.clear();
+    let out = String::from_utf8(webvtt::write(&t)).unwrap();
+    for needle in [
+        "REGION\n",
+        "id:bottom\n",
+        "width:60%\n",
+        "lines:3\n",
+        "regionanchor:0%,100%\n",
+        "viewportanchor:50%,90%\n",
+        "scroll:up\n",
+    ] {
+        assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
+    }
+
+    // The rebuilt block re-parses identically.
+    let t2 = webvtt::parse(out.as_bytes()).unwrap();
+    let s2 = t2
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "vtt_region.bottom")
+        .map(|(_, v)| v.as_str())
+        .unwrap();
+    assert_eq!(
+        s2,
+        "width:60% lines:3 regionanchor:0%,100% viewportanchor:50%,90% scroll:up"
+    );
+}
+
 fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
     for s in segs {
         f(s);
