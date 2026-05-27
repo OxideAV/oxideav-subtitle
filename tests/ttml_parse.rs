@@ -109,3 +109,124 @@ fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// IMSC1 §6 + §7 end-to-end integration.
+
+const IMSC1_SAMPLE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\"\n\
+    xmlns:tts=\"http://www.w3.org/ns/ttml#styling\"\n\
+    xmlns:ttp=\"http://www.w3.org/ns/ttml#parameter\"\n\
+    xmlns:ittp=\"http://www.w3.org/ns/ttml/profile/imsc1#parameter\"\n\
+    xmlns:itts=\"http://www.w3.org/ns/ttml/profile/imsc1#styling\"\n\
+    ttp:frameRate=\"25\" ttp:tickRate=\"10000000\" ttp:timeBase=\"media\"\n\
+    ittp:aspectRatio=\"16 9\" xml:lang=\"en\">\n\
+  <head>\n\
+    <styling>\n\
+      <style xml:id=\"sCenter\" tts:color=\"white\" tts:textAlign=\"center\" tts:displayAlign=\"after\" tts:lineHeight=\"120%\"/>\n\
+    </styling>\n\
+    <layout>\n\
+      <region xml:id=\"bottom\" tts:origin=\"10% 80%\" tts:extent=\"80% 10%\" tts:displayAlign=\"after\" tts:textAlign=\"center\"/>\n\
+      <region xml:id=\"top\" tts:origin=\"10% 10%\" tts:extent=\"80% 10%\" tts:displayAlign=\"before\"/>\n\
+    </layout>\n\
+  </head>\n\
+  <body>\n\
+    <div>\n\
+      <p begin=\"00:00:01:05\" end=\"00:00:02:00\" style=\"sCenter\" region=\"bottom\">First line</p>\n\
+      <p begin=\"50f\" end=\"75f\" region=\"top\">Second line</p>\n\
+    </div>\n\
+  </body>\n\
+</tt>\n";
+
+#[test]
+fn full_imsc1_document_parses_and_round_trips() {
+    let t = ttml::parse(IMSC1_SAMPLE.as_bytes()).unwrap();
+    // Two cues — both timed in HH:MM:SS:FF / Nf forms against
+    // ttp:frameRate="25" (so 00:00:01:05 = 1.2 s; 50f = 2.0 s).
+    assert_eq!(t.cues.len(), 2);
+    assert_eq!(t.cues[0].start_us, 1_200_000);
+    assert_eq!(t.cues[0].end_us, 2_000_000);
+    assert_eq!(t.cues[1].start_us, 2_000_000);
+    assert_eq!(t.cues[1].end_us, 3_000_000);
+
+    // Style: textAlign mapped to align.
+    assert_eq!(t.styles[0].align, oxideav_core::TextAlign::Center);
+    let extras = t
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "ttml_style_extra.sCenter")
+        .map(|(_, v)| v.as_str())
+        .expect("style extras carry displayAlign + lineHeight");
+    assert!(extras.contains("tts:displayAlign=\"after\""));
+    assert!(extras.contains("tts:lineHeight=\"120%\""));
+
+    // Region table.
+    assert!(t.metadata.iter().any(|(k, _)| k == "ttml_region.bottom"));
+    assert!(t.metadata.iter().any(|(k, _)| k == "ttml_region.top"));
+
+    // Per-cue region references.
+    assert!(t
+        .metadata
+        .iter()
+        .any(|(k, v)| k == "ttml_cue_region.0" && v == "bottom"));
+    assert!(t
+        .metadata
+        .iter()
+        .any(|(k, v)| k == "ttml_cue_region.1" && v == "top"));
+
+    // Params captured.
+    assert_eq!(
+        t.metadata
+            .iter()
+            .find(|(k, _)| k == "ttml_param.frameRate")
+            .map(|(_, v)| v.as_str()),
+        Some("25")
+    );
+
+    // Round-trip: write → parse, all observables identical.
+    let written = ttml::write(&t);
+    let s = String::from_utf8(written).unwrap();
+    assert!(s.contains("ttp:frameRate=\"25\""));
+    assert!(s.contains("ittp:aspectRatio=\"16 9\""));
+    assert!(s.contains("<layout>"));
+    assert!(s.contains("<region xml:id=\"bottom\""));
+    assert!(s.contains("<region xml:id=\"top\""));
+    assert!(s.contains("region=\"bottom\""));
+    assert!(s.contains("region=\"top\""));
+    assert!(s.contains("tts:displayAlign=\"after\""));
+
+    let t2 = ttml::parse(s.as_bytes()).unwrap();
+    assert_eq!(t2.cues.len(), 2);
+    for (a, b) in t.cues.iter().zip(t2.cues.iter()) {
+        assert_eq!(a.start_us, b.start_us);
+        assert_eq!(a.end_us, b.end_us);
+    }
+    assert!(t2
+        .metadata
+        .iter()
+        .any(|(k, v)| k == "ttml_region.bottom" && v.contains("tts:origin=\"10% 80%\"")));
+    assert_eq!(
+        t2.metadata
+            .iter()
+            .find(|(k, _)| k == "ttml_param.frameRate")
+            .map(|(_, v)| v.as_str()),
+        Some("25")
+    );
+}
+
+#[test]
+fn imsc1_region_without_cue_ref_still_round_trips() {
+    // Region defined but no <p region="..."> — should still write the
+    // <layout> back out so authoring intent survives.
+    let src = "<?xml version=\"1.0\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <head><layout>\n\
+    <region xml:id=\"r1\" tts:origin=\"0% 0%\" tts:extent=\"100% 100%\"/>\n\
+  </layout></head>\n\
+  <body><div><p begin=\"0s\" end=\"1s\">x</p></div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    let s = String::from_utf8(ttml::write(&t)).unwrap();
+    assert!(s.contains("<region xml:id=\"r1\""), "{}", s);
+    assert!(s.contains("tts:origin=\"0% 0%\""));
+}

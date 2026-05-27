@@ -153,6 +153,56 @@ extradata) the writer reconstructs a complete REGION block from the
 style + `vtt_region.<id>` metadata, so all five settings survive the
 synthesised write path too.
 
+## TTML / IMSC 1.2
+
+The TTML parser handles core TTML v1, TTML v2, and the IMSC 1.2 profile.
+What the unified IR can model maps directly:
+
+* `tts:textAlign` on a `<style>` lands on `SubtitleStyle.align` (the
+  `justify` value has no IR home and falls through to the extras path
+  below).
+* `tts:color` / `tts:backgroundColor` / `tts:fontFamily` /
+  `tts:fontSize` / `tts:fontWeight` / `tts:fontStyle` /
+  `tts:textDecoration` continue to populate `SubtitleStyle` fields.
+
+The IMSC1 features that don't fit existing IR fields are captured as
+track-level metadata so a parse → write round-trip is byte-faithful:
+
+* `<head><layout><region xml:id="X" tts:.../></layout></head>` — every
+  region surfaces as `ttml_region.<id>` carrying the full attribute
+  list in canonical spec order (`origin`, `extent`, `padding`,
+  `backgroundColor`, `color`, `displayAlign`, `textAlign`, …,
+  `itts:forcedDisplay`, `itts:fillLineGap`).
+* `<p region="X">` cue-region references ride alongside the cue in
+  `ttml_cue_region.<idx>`.
+* IR-unmodelled `tts:*` / `itts:*` attributes on `<style>` —
+  `displayAlign`, `extent`, `origin`, `padding`, `lineHeight`,
+  `opacity`, `textOutline`, `textShadow`, `writingMode`, `wrapOption`,
+  `direction`, `rubyAlign`, `shear`, `showBackground`, `visibility`,
+  `display`, `disparity`, `fontSelectionStrategy`, `position`,
+  `itts:forcedDisplay`, `itts:fillLineGap` — survive as
+  `ttml_style_extra.<id>` in canonical order.
+* `<tt>` parameter attributes — `ttp:frameRate`, `ttp:tickRate`,
+  `ttp:timeBase`, `ttp:profile`, `ttp:cellResolution`,
+  `ttp:frameRateMultiplier`, `ttp:displayAspectRatio`,
+  `ttp:contentProfiles`, plus the IMSC1 extension parameters
+  `ittp:aspectRatio`, `ittp:activeArea`,
+  `ittp:progressivelyDecodable` — round-trip via
+  `ttml_param.<name>`. The writer rebuilds the `xmlns:ttp` /
+  `xmlns:ittp` / `xmlns:itts` declarations on `<tt>` only when the
+  corresponding namespace is in use.
+
+Timing previously dropped on the floor now decodes when the document
+supplies the matching `<tt>` parameter:
+
+* `HH:MM:SS:FF` clock-time frames against `ttp:frameRate`
+  (e.g. `00:00:01:05` at 25 fps = 1.2 s, instead of 1.0 s).
+* `<n>f` offset-time frames against `ttp:frameRate`.
+* `<n>t` offset-time ticks against `ttp:tickRate`.
+
+Without the matching parameter on `<tt>`, the frame / tick component is
+silently dropped (legacy behaviour preserved for back-compat).
+
 ## Input encoding tolerance
 
 Every text-subtitle parser in this crate routes its raw bytes through

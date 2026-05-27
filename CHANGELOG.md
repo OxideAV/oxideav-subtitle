@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TTML / IMSC 1.2 layout regions, parameter attributes, and extended
+  styling now parse + round-trip end-to-end. `<head><layout><region
+  xml:id="X" tts:.../></layout></head>` definitions (IMSC1 §7) ride as
+  per-region `ttml_region.<id>` track metadata carrying the canonical
+  attribute order (`origin`, `extent`, `padding`, `backgroundColor`,
+  `color`, `displayAlign`, `textAlign`, …, `itts:forcedDisplay`,
+  `itts:fillLineGap`). `<p region="X">` cue-region references survive
+  as per-cue `ttml_cue_region.<idx>`. `tts:textAlign` on a `<style>`
+  maps to `SubtitleStyle.align`; IR-unmodelled `tts:*` / `itts:*`
+  styling attributes (`displayAlign`, `extent`, `origin`, `padding`,
+  `lineHeight`, `opacity`, `textOutline`, `textShadow`, `writingMode`,
+  `wrapOption`, `direction`, `rubyAlign`, `shear`, `showBackground`,
+  `visibility`, `display`, `disparity`, `fontSelectionStrategy`,
+  `position`, `itts:forcedDisplay`, `itts:fillLineGap`) survive as
+  `ttml_style_extra.<id>` in canonical order. `<tt>` parameter
+  attributes (`ttp:frameRate`, `ttp:tickRate`, `ttp:timeBase`,
+  `ttp:profile`, `ttp:cellResolution`, `ttp:frameRateMultiplier`,
+  `ttp:displayAspectRatio`, `ttp:contentProfiles`) and IMSC1 extension
+  parameters (`ittp:aspectRatio`, `ittp:activeArea`,
+  `ittp:progressivelyDecodable`) round-trip as `ttml_param.<name>`,
+  with the writer reinstating `xmlns:ttp` / `xmlns:ittp` /
+  `xmlns:itts` only when the corresponding namespace is in use.
+  Covered by 14 new `ttml::tests::imsc1_*` / `ttp_*` /
+  `hhmmssff_*` / `cue_region_*` unit tests plus two integration tests
+  in `tests/ttml_parse.rs::full_imsc1_document_parses_and_round_trips`
+  and `imsc1_region_without_cue_ref_still_round_trips`.
+- TTML timing previously dropped on the floor now decodes when the
+  source supplies the matching `<tt>` parameter: `HH:MM:SS:FF`
+  clock-time frames against `ttp:frameRate` (00:00:01:05 at 25 fps
+  ⇒ 1.2 s, not 1.0 s); `<n>f` offset-time frames against
+  `ttp:frameRate`; `<n>t` offset-time ticks against `ttp:tickRate`.
+  Without the matching parameter the frame / tick component is
+  dropped (legacy behaviour preserved for back-compat).
 - WebVTT cue payload inline markup (WebVTT §3.5) now has full byte-stable
   parse/emit round-trip coverage: `<v Speaker>` voice spans preserve the
   annotation (and `<v>` with no annotation re-emits cleanly); `<c.foo.bar>`
