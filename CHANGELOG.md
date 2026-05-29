@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/OxideAV/oxideav-subtitle/compare/v0.1.1...v0.1.2) - 2026-05-29
+
+### Other
+
+- advance inline-text accumulators by full UTF-8 codepoints
+- per-cue TTI + GSI DSC/CCT/LC/TCS round-trip via metadata
+- IMSC 1.2 layout + parameters + extended styling round-trip
+- §3.5 cue-payload inline markup round-trip + UTF-8 fix
+- parse all five REGION settings + round-trip via vtt_region.<id>
+- preserve vertical / line+position align suffixes / region cue settings
+- shared UTF-16 BOM + classic-Mac CR-only tolerance
+
 ### Fixed
 
 - Multi-byte UTF-8 cue text adjacent to a tag boundary is no longer
