@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- EBU STL per-cue TTI field round-trip preservation. SGN (subtitle group
+  number), SN (subtitle number), CS (cumulative status), VP (vertical
+  position), and JC (justification code) now survive a parse → write
+  loop via per-cue `ebu_tti.<idx>.<field>` track metadata; previously
+  the writer hardcoded SGN=0, SN=index, CS=0, VP=`mnr-1`, JC=0x02 on
+  every row regardless of the source's values. Extension-block
+  membership (EBN != 0xFF / != 0x00) is recorded as
+  `ebu_tti.<idx>.ext.<ebn>` on the parent cue so a continuation row's
+  EBN can be replayed. Comment-flagged TTI rows (CF == 1), previously
+  silently dropped, now ride alongside as `ebu_tti.comment.<n>.*`
+  entries (SGN / SN / EBN / CS / TCI / TCO / VP / JC + `tf_hex` of the
+  raw 112-byte text field) and are re-emitted after the playable cues
+  on write so they survive byte-faithfully. GSI bytes DSC / CCT / LC /
+  TCS likewise round-trip through `dsc` / `cct` / `lc` / `tcs`
+  track-level metadata; previously the writer always emitted DSC='1',
+  CCT='00', LC='00', TCS='1'. Programmatic tracks (no metadata
+  populated) still fall back to the same first-cut defaults so existing
+  call-sites are unaffected. Covered by 7 new
+  `ebu_stl::tests::{parse_captures_tti_fields_into_per_cue_metadata,
+  write_replays_captured_tti_fields_byte_exact,
+  write_uses_safe_defaults_for_programmatic_track,
+  comment_flagged_rows_round_trip_via_metadata,
+  extension_block_marker_recorded_on_parent_cue,
+  dsc_cct_lc_tcs_round_trip_through_metadata, hex_helpers_round_trip}`
+  unit tests plus
+  `tests/ebu_stl_parse.rs::per_cue_tti_fields_round_trip_end_to_end`
+  and `comment_flag_row_survives_parse_write_parse` integration tests.
 - TTML / IMSC 1.2 layout regions, parameter attributes, and extended
   styling now parse + round-trip end-to-end. `<head><layout><region
   xml:id="X" tts:.../></layout></head>` definitions (IMSC1 §7) ride as

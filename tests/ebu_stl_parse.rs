@@ -171,3 +171,116 @@ fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
         }
     }
 }
+
+#[test]
+fn per_cue_tti_fields_round_trip_end_to_end() {
+    // First TTI: SGN=3, SN=42, CS=1, VP=11, JC=0x01 (left-justified).
+    // Second TTI: SGN=7, SN=43, CS=0, VP=12, JC=0x03 (right-justified).
+    let mut buf = vec![0x20u8; GSI_SIZE];
+    buf[0..3].copy_from_slice(b"850");
+    buf[3..11].copy_from_slice(b"STL25.01");
+    buf[11] = b'1';
+    buf[12..14].copy_from_slice(b"00");
+    buf[14..16].copy_from_slice(b"00");
+    buf[238..243].copy_from_slice(b"00002");
+    buf[243..248].copy_from_slice(b"00002");
+    buf[248..250].copy_from_slice(b"40");
+    buf[250..252].copy_from_slice(b"23");
+    buf[252] = b'1';
+    for (sgn, sn, cs, vp, jc, body) in [
+        (3u8, 42u16, 1u8, 11u8, 0x01u8, "Hello"),
+        (7u8, 43u16, 0u8, 12u8, 0x03u8, "World"),
+    ] {
+        // Header bytes default to 0 in real STL; TF area pads with 0x8F.
+        let mut tti = [0x8Fu8; TTI_SIZE];
+        tti[..16].fill(0);
+        tti[0] = sgn;
+        let sn_le = sn.to_le_bytes();
+        tti[1] = sn_le[0];
+        tti[2] = sn_le[1];
+        tti[3] = 0xFF;
+        tti[4] = cs;
+        tti[5..9].copy_from_slice(&[0, 0, 1, 0]);
+        tti[9..13].copy_from_slice(&[0, 0, 2, 0]);
+        tti[13] = vp;
+        tti[14] = jc;
+        tti[15] = 0;
+        let body_bytes = body.as_bytes();
+        tti[16..16 + body_bytes.len()].copy_from_slice(body_bytes);
+        buf.extend_from_slice(&tti);
+    }
+
+    // Parse → write → parse-and-inspect each cue's TTI fields.
+    let t1 = ebu_stl::parse(&buf).unwrap();
+    let out = ebu_stl::write(&t1).unwrap();
+    let t2 = ebu_stl::parse(&out).unwrap();
+    let get2 = |k: &str| {
+        t2.metadata
+            .iter()
+            .find(|(kk, _)| kk == k)
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(get2("ebu_tti.0.sgn").as_deref(), Some("3"));
+    assert_eq!(get2("ebu_tti.0.sn").as_deref(), Some("42"));
+    assert_eq!(get2("ebu_tti.0.cs").as_deref(), Some("1"));
+    assert_eq!(get2("ebu_tti.0.vp").as_deref(), Some("11"));
+    assert_eq!(get2("ebu_tti.0.jc").as_deref(), Some("1"));
+    assert_eq!(get2("ebu_tti.1.sgn").as_deref(), Some("7"));
+    assert_eq!(get2("ebu_tti.1.sn").as_deref(), Some("43"));
+    assert_eq!(get2("ebu_tti.1.vp").as_deref(), Some("12"));
+    assert_eq!(get2("ebu_tti.1.jc").as_deref(), Some("3"));
+}
+
+#[test]
+fn comment_flag_row_survives_parse_write_parse() {
+    let mut buf = vec![0x20u8; GSI_SIZE];
+    buf[0..3].copy_from_slice(b"850");
+    buf[3..11].copy_from_slice(b"STL25.01");
+    buf[11] = b'1';
+    buf[12..16].copy_from_slice(b"0000");
+    buf[238..243].copy_from_slice(b"00002");
+    buf[243..248].copy_from_slice(b"00001");
+    buf[248..250].copy_from_slice(b"40");
+    buf[250..252].copy_from_slice(b"23");
+    buf[252] = b'1';
+
+    let mut play = [0x8Fu8; TTI_SIZE];
+    play[..16].fill(0);
+    play[3] = 0xFF;
+    play[5..9].copy_from_slice(&[0, 0, 1, 0]);
+    play[9..13].copy_from_slice(&[0, 0, 2, 0]);
+    play[13] = 22;
+    play[14] = 0x02;
+    play[16] = b'A';
+    buf.extend_from_slice(&play);
+
+    let mut comment = [0x8Fu8; TTI_SIZE];
+    comment[..16].fill(0);
+    comment[3] = 0xFF;
+    comment[15] = 1; // CF = comment.
+    comment[16] = b'N';
+    comment[17] = b'O';
+    comment[18] = b'T';
+    comment[19] = b'E';
+    buf.extend_from_slice(&comment);
+
+    let t1 = ebu_stl::parse(&buf).unwrap();
+    assert_eq!(t1.cues.len(), 1, "comment row not a playable cue");
+    let out = ebu_stl::write(&t1).unwrap();
+    // Two TTI rows on the way out (one playable + one comment).
+    assert_eq!(out.len(), GSI_SIZE + 2 * TTI_SIZE);
+    // The second emitted row should carry CF=1 (comment).
+    assert_eq!(out[GSI_SIZE + TTI_SIZE + 15], 1, "comment flag re-emitted");
+    // Reparse — comment flag is again excluded from cues.
+    let t2 = ebu_stl::parse(&out).unwrap();
+    assert_eq!(
+        t2.cues.len(),
+        1,
+        "comment row still not a cue after round-trip"
+    );
+    let has_comment = t2
+        .metadata
+        .iter()
+        .any(|(k, _)| k.starts_with("ebu_tti.comment.0."));
+    assert!(has_comment, "comment metadata preserved on second parse");
+}
