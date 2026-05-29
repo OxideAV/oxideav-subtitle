@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Multi-byte UTF-8 cue text adjacent to a tag boundary is no longer
+  corrupted into Latin-1 mojibake in the SubRip (`srt`), MicroDVD
+  (`microdvd`), and RealText (`realtext`) inline-markup parsers. Each
+  parser's plain-text accumulator advanced one *byte* at a time via
+  `byte as char`, so a codepoint such as `é` (`0xC3 0xA9`) or `漢`
+  (`0xE6 0xBC 0xA2`) sitting next to a `<i>` / `{y:i}` / `</font>`
+  delimiter was split into its individual continuation bytes and
+  re-emitted as `Ã©` / `æ¼¢`. The accumulators now advance one full
+  UTF-8 codepoint at a time (matching the WebVTT fix already in place).
+  Covered by new `srt::tests::multibyte_text_around_tags_round_trips`,
+  `microdvd::tests::multibyte_text_around_tags_round_trips`, and
+  `realtext::tests::multibyte_text_around_tags_round_trips`.
+
 ### Added
 
 - EBU STL per-cue TTI field round-trip preservation. SGN (subtitle group

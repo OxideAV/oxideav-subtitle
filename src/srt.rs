@@ -345,8 +345,16 @@ impl<'a> Parser<'a> {
                     self.pos = bytes.len();
                 }
             } else {
-                text_buf.push(byte as char);
-                self.pos += 1;
+                // Advance one full UTF-8 codepoint. `self.src` is a `&str`,
+                // so the byte at `self.pos` is on a char boundary. Using
+                // `byte as char` here would mangle multi-byte chars (`à`,
+                // `漢`, …) into Latin-1 continuation bytes.
+                let c = self.src[self.pos..]
+                    .chars()
+                    .next()
+                    .expect("non-empty rest at a char boundary");
+                text_buf.push(c);
+                self.pos += c.len_utf8();
             }
         }
         if !text_buf.is_empty() {
@@ -580,6 +588,20 @@ mod tests {
             Segment::Color { rgb, .. } => assert_eq!(*rgb, (255, 0, 0)),
             other => panic!("expected Color segment, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn multibyte_text_around_tags_round_trips() {
+        // Regression: the inline-tag accumulator previously pushed each
+        // raw byte as a `char`, mangling multi-byte UTF-8 (`café`, `漢字`)
+        // adjacent to a tag boundary into Latin-1 mojibake.
+        let src = "1\n00:00:01,000 --> 00:00:02,000\ncafé <i>naïve 漢字</i> Ω\n\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(
+            out.contains("café <i>naïve 漢字</i> Ω"),
+            "multi-byte text mangled on round-trip: {out}"
+        );
     }
 
     #[test]

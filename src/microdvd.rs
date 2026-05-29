@@ -265,8 +265,15 @@ fn parse_line(line: &str, out: &mut Vec<Segment>) {
                 i += 1;
             }
         } else {
-            text_buf.push(bytes[i] as char);
-            i += 1;
+            // Advance one full UTF-8 codepoint. `line` is a `&str`, so the
+            // byte at `i` is on a char boundary. `bytes[i] as char` would
+            // mangle multi-byte chars (`à`, `漢`, …) into Latin-1 bytes.
+            let c = line[i..]
+                .chars()
+                .next()
+                .expect("non-empty rest at a char boundary");
+            text_buf.push(c);
+            i += c.len_utf8();
         }
     }
     if !text_buf.is_empty() {
@@ -589,5 +596,19 @@ mod tests {
         let out = write(&t).unwrap();
         let out_s = String::from_utf8(out).unwrap();
         assert!(out_s.contains("{c:$0000FF}"));
+    }
+
+    #[test]
+    fn multibyte_text_around_tags_round_trips() {
+        // Regression: the text accumulator previously pushed each raw byte
+        // as a `char`, corrupting multi-byte UTF-8 (`café`, `漢字`) next to
+        // a `{...}` tag into Latin-1 mojibake.
+        let src = "{10}{20}café {y:i}naïve 漢字\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let text = crate::ir::plain_text(&t.cues[0].segments);
+        assert!(
+            text.contains("café") && text.contains("naïve 漢字"),
+            "multi-byte text mangled: {text:?}"
+        );
     }
 }

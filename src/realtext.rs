@@ -382,8 +382,16 @@ impl<'a> RtParser<'a> {
                     }
                 }
             } else {
-                text_buf.push(bytes[self.pos] as char);
-                self.pos += 1;
+                // Advance one full UTF-8 codepoint. `self.src` is a `&str`,
+                // so the byte at `self.pos` is on a char boundary. Using
+                // `bytes[self.pos] as char` would mangle multi-byte chars
+                // (`à`, `漢`, …) into Latin-1 continuation bytes.
+                let c = self.src[self.pos..]
+                    .chars()
+                    .next()
+                    .expect("non-empty rest at a char boundary");
+                text_buf.push(c);
+                self.pos += c.len_utf8();
             }
         }
         if !text_buf.is_empty() {
@@ -696,6 +704,21 @@ World
         let s = String::from_utf8(out).unwrap();
         assert!(s.contains("<time begin="));
         assert!(s.contains("</window>"));
+    }
+
+    #[test]
+    fn multibyte_text_around_tags_round_trips() {
+        // Regression: the text accumulator previously pushed each raw byte
+        // as a `char`, corrupting multi-byte UTF-8 (`café`, `漢字`) adjacent
+        // to a tag into Latin-1 mojibake.
+        let src =
+            "<window>\n<time begin=\"0.0\" end=\"2.0\"/>\ncafé <i>naïve 漢字</i> Ω\n</window>\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let text = crate::ir::plain_text(&t.cues[0].segments);
+        assert!(
+            text.contains("café") && text.contains("naïve 漢字") && text.contains('Ω'),
+            "multi-byte text mangled: {text:?}"
+        );
     }
 
     #[test]

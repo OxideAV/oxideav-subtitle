@@ -225,6 +225,13 @@ accept the same matrix.
 Invalid byte sequences in any decode path are replaced with U+FFFD —
 we never reject a file because a single byte was malformed.
 
+Once decoded to UTF-8, the inline-markup tokenisers in every text parser
+advance one full codepoint at a time. An earlier byte-at-a-time
+accumulator in the SubRip, MicroDVD, and RealText parsers split a
+multi-byte codepoint (`é`, `漢`, …) adjacent to a tag boundary into its
+Latin-1 continuation bytes, re-emitting it as mojibake; that path now
+matches the WebVTT tokeniser and round-trips such text byte-for-byte.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
