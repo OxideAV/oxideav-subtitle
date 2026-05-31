@@ -132,6 +132,37 @@ change: previously a multi-byte codepoint (`à`, `漢`, etc.) in cue text
 adjacent to a tag boundary was sliced byte-by-byte and re-emitted as
 mojibake; the accumulator now advances by full codepoints.
 
+## WebVTT STYLE blocks
+
+The WebVTT `STYLE` block (`::cue(...) { … }`) parses both the selector and
+the eleven CSS properties WebVTT §8.2.1 lists as applying to the `::cue`
+pseudo-element. Selectors are recognised in all five spec forms:
+
+* `::cue` — surfaces as a style named `::cue`.
+* `::cue(.class)` / `::cue(.a.b.c)` — historical convention; the dot chain
+  becomes the style name (`"a.b.c"`) so `track.style("a.b.c")` keeps
+  working.
+* `::cue(#id)` — surfaces as a style named `#id`.
+* `::cue(<elem>)` (e.g. `::cue(b)`, `::cue(i)`, `::cue(c)`, `::cue(v)`,
+  `::cue(lang)`, `::cue(ruby)`, `::cue(rt)`) — wrapped as `::cue(elem)` so
+  it can't collide with a class named the same letter.
+* Anything more exotic (compound / attribute / `:past`/`:future`) is kept
+  verbatim as `::cue(<raw>)`.
+
+Properties with a `SubtitleStyle` field (`color`, `background-color`,
+`font-family`, `font-size`, `font-weight`, `font-style`,
+`text-decoration`) populate those fields. The seven §8.2.1 properties
+with no IR home — `opacity`, `visibility`, `text-shadow`, `outline`,
+`white-space`, `text-combine-upright`, `ruby-position`, `line-height` —
+ride a per-style `vtt_style.<name>.<property>` track-metadata channel in
+canonical spec order, mirroring the proven `vtt_region.<id>` /
+`ttml_style_extra.<id>` pattern. The synthesised (no-extradata) writer
+reconstructs the original `::cue(...)` selector and re-emits the extras
+deterministically, so a parse → write → parse cycle is byte-stable for
+both the selector and the full property set. Properties §8.2.1 does not
+list (e.g. `cursor`, `display`) are silently dropped per the spec's
+"other properties set on the pseudo-element must be ignored" clause.
+
 ## WebVTT REGION blocks
 
 `REGION` definition blocks (WebVTT §4.3) are parsed for all five region

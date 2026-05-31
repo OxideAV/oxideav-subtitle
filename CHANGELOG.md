@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- WebVTT `STYLE` block §8.2.1 property + selector coverage now matches
+  the spec. The parser previously accepted only `::cue(.class)`
+  selectors (silently dropping bare `::cue`, `::cue(#id)`, and
+  `::cue(<element>)`) and only seven of the eleven properties §8.2.1
+  lists as applying to `::cue`. The new encoding tags styles as
+  `"::cue"` (bare), `"#<id>"`, `"::cue(<elem>)"`, or `"<class.chain>"`
+  (historical `::cue(.x)` shape preserved for back-compat). The four
+  spec-listed properties without a `SubtitleStyle` field — `opacity`,
+  `visibility`, `text-shadow`, `outline`, `white-space`,
+  `text-combine-upright`, `ruby-position`, `line-height` — ride a
+  per-style `vtt_style.<name>.<property>` metadata channel in canonical
+  spec order, mirroring the existing `vtt_region.<id>` /
+  `ttml_style_extra.<id>` round-trip pattern. The synthesised writer
+  (no-extradata path) reconstructs the original `::cue(...)` selector
+  string and re-emits the extras deterministically so a parse → write →
+  parse cycle is byte-stable. The `background-color` property, which
+  parses into `SubtitleStyle.back_color`, is now also re-emitted by the
+  synthesised writer (previously dropped on the floor). Covered by 12
+  new `webvtt::tests::{cue_bare_selector_with_no_argument_round_trips,
+  cue_id_selector_round_trips, cue_type_selector_round_trips,
+  class_chain_selector_keeps_dot_chain_in_style_name,
+  opacity_visibility_text_shadow_outline_round_trip_via_metadata,
+  white_space_text_combine_ruby_position_line_height_round_trip,
+  background_color_round_trips_to_back_color_field,
+  unknown_property_is_silently_dropped,
+  extras_emit_in_canonical_order_regardless_of_source_order,
+  parse_style_block_existing_test_still_works,
+  multiple_style_blocks_each_with_extras,
+  synthesised_write_full_roundtrip_is_byte_stable}` unit tests plus
+  `tests/webvtt_parse.rs::style_block_full_property_round_trip_end_to_end`
+  integration test.
+
 ## [0.1.2](https://github.com/OxideAV/oxideav-subtitle/compare/v0.1.1...v0.1.2) - 2026-05-29
 
 ### Other

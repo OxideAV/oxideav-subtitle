@@ -232,6 +232,108 @@ fn cue_payload_language_span_with_bcp47_tag() {
     assert!(out.contains("漢字"), "{out}");
 }
 
+#[test]
+fn style_block_full_property_round_trip_end_to_end() {
+    // WebVTT §8.2.1 lists eleven properties that apply to the `::cue`
+    // pseudo-element. Four land directly on `SubtitleStyle` (color,
+    // font shorthand pieces, text-decoration, background); the other seven
+    // ride the per-style metadata channel (`vtt_style.<name>.<prop>`) in
+    // canonical spec order. Both halves must survive a parse → write →
+    // parse cycle.
+    let src = "\
+WEBVTT
+
+STYLE
+::cue {
+  color: white;
+  background-color: black;
+}
+
+STYLE
+::cue(#warn) {
+  color: red;
+  opacity: 0.9;
+}
+
+STYLE
+::cue(b) {
+  font-weight: bold;
+}
+
+STYLE
+::cue(.fancy) {
+  color: white;
+  background-color: rgb(16, 32, 48);
+  font-family: \"DejaVu Sans\";
+  font-size: 24px;
+  font-weight: bold;
+  font-style: italic;
+  text-decoration: underline line-through;
+  opacity: 0.75;
+  visibility: visible;
+  text-shadow: 1px 1px 2px black;
+  outline: 2px solid red;
+  white-space: pre-wrap;
+  text-combine-upright: all;
+  ruby-position: over;
+  line-height: 1.4;
+}
+
+warn
+00:00:01.000 --> 00:00:02.000
+<c.fancy>hi</c>
+";
+    let t1 = webvtt::parse(src.as_bytes()).unwrap();
+
+    // Bare ::cue, ::cue(#id), ::cue(elem), and ::cue(.class) all surface as
+    // distinct styles.
+    assert!(t1.styles.iter().any(|s| s.name == "::cue"));
+    assert!(t1.styles.iter().any(|s| s.name == "#warn"));
+    assert!(t1.styles.iter().any(|s| s.name == "::cue(b)"));
+    let fancy = t1.style("fancy").expect("fancy style");
+    // IR fields populated.
+    assert_eq!(fancy.primary_color.unwrap().0, 255);
+    assert_eq!(fancy.back_color, Some((16, 32, 48, 255)));
+    assert_eq!(fancy.font_family.as_deref(), Some("DejaVu Sans"));
+    assert_eq!(fancy.font_size, Some(24.0));
+    assert!(fancy.bold && fancy.italic && fancy.underline && fancy.strike);
+    // All seven extras captured.
+    for prop in [
+        "opacity",
+        "visibility",
+        "text-shadow",
+        "outline",
+        "white-space",
+        "text-combine-upright",
+        "ruby-position",
+        "line-height",
+    ] {
+        let key = format!("vtt_style.fancy.{prop}");
+        assert!(
+            t1.metadata.iter().any(|(k, _)| k == &key),
+            "missing extra {key} (got: {:?})",
+            t1.metadata
+                .iter()
+                .filter(|(k, _)| k.starts_with("vtt_style."))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // Force the synthesised write path and confirm the rebuilt block
+    // re-parses byte-stable. Drift in the second cycle is the canonical
+    // round-trip-fidelity signal.
+    let mut t1_synth = t1.clone();
+    t1_synth.extradata.clear();
+    let out1 = String::from_utf8(webvtt::write(&t1_synth)).unwrap();
+    let mut t2 = webvtt::parse(out1.as_bytes()).unwrap();
+    t2.extradata.clear();
+    let out2 = String::from_utf8(webvtt::write(&t2)).unwrap();
+    assert_eq!(
+        out1, out2,
+        "second-cycle drift:\n=== out1 ===\n{out1}\n=== out2 ===\n{out2}"
+    );
+}
+
 fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
     for s in segs {
         f(s);

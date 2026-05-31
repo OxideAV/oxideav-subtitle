@@ -66,7 +66,17 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
             continue;
         }
         if first_lc == "style" {
-            for style in parse_style_block(&block[1..]) {
+            for (style, extras) in parse_style_block(&block[1..]) {
+                // Capture spec-listed properties that have no `SubtitleStyle`
+                // home (opacity, visibility, text-shadow, outline, white-space,
+                // text-combine-upright, ruby-position, line-height) as per-style
+                // metadata so a synthesised write can rebuild them. Mirrors
+                // `vtt_region.<id>` / `ttml_style_extra.<id>`.
+                for (key, val) in extras {
+                    track
+                        .metadata
+                        .push((format!("vtt_style.{}.{}", style.name, key), val));
+                }
                 track.styles.push(style);
             }
             // Re-emit into extradata for remuxing.
@@ -161,9 +171,12 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
                 continue;
             }
             out.push_str("\nSTYLE\n");
-            out.push_str(&format!("::cue(.{}) {{\n", s.name));
+            out.push_str(&format!("{} {{\n", style_name_to_selector(&s.name)));
             if let Some((r, g, b, _)) = s.primary_color {
                 out.push_str(&format!("  color: rgb({}, {}, {});\n", r, g, b));
+            }
+            if let Some((r, g, b, _)) = s.back_color {
+                out.push_str(&format!("  background-color: rgb({}, {}, {});\n", r, g, b));
             }
             if let Some(fam) = &s.font_family {
                 out.push_str(&format!("  font-family: {};\n", fam));
@@ -186,6 +199,18 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
                     out.push_str(" line-through");
                 }
                 out.push_str(";\n");
+            }
+            // Re-emit §8.2.1 properties that landed in per-style metadata, in
+            // canonical spec order so the synthesised write is stable.
+            let key_prefix = format!("vtt_style.{}.", s.name);
+            for canonical in EXTRA_CUE_PROPS {
+                if let Some((_, v)) = track
+                    .metadata
+                    .iter()
+                    .find(|(k, _)| k.strip_prefix(&key_prefix) == Some(canonical))
+                {
+                    out.push_str(&format!("  {}: {};\n", canonical, v));
+                }
             }
             out.push_str("}\n");
         }
@@ -261,10 +286,26 @@ fn split_blocks<'a>(lines: &'a [&'a str]) -> Vec<Vec<&'a str>> {
     blocks
 }
 
-fn parse_style_block(lines: &[&str]) -> Vec<SubtitleStyle> {
-    // Minimal CSS parser: look for `::cue(.name) { k: v; ... }` rules.
+/// Parse a `STYLE` block payload (everything after the leading `STYLE` line).
+///
+/// Returns one `(style, extras)` pair per `::cue(...)` rule, where `extras` is
+/// the canonical-spec-ordered list of properties that survived parsing but
+/// have no `SubtitleStyle` field to land in (these get round-tripped via
+/// per-style `vtt_style.<name>.<property>` metadata).
+///
+/// Selector → style-name encoding (chosen so existing callers that look up
+/// `track.style("yellow")` for a `::cue(.yellow)` selector keep working):
+///
+/// * `::cue` (no argument)        → `"::cue"`
+/// * `::cue(.a)` / `::cue(.a.b)`  → `"a"` / `"a.b"` (dot chain preserved)
+/// * `::cue(#id)`                 → `"#id"`
+/// * `::cue(elem)` (type-sel)     → `"::cue(elem)"`
+/// * everything else (compound /
+///   attribute / `:past` / etc.)  → `"::cue(<raw>)"`
+fn parse_style_block(lines: &[&str]) -> Vec<(SubtitleStyle, Vec<(String, String)>)> {
+    // Minimal CSS parser: look for `::cue(...) { k: v; ... }` rules.
     let joined = lines.join("\n");
-    let mut styles: Vec<SubtitleStyle> = Vec::new();
+    let mut out: Vec<(SubtitleStyle, Vec<(String, String)>)> = Vec::new();
     let mut i = 0;
     let bytes = joined.as_bytes();
     while i < bytes.len() {
@@ -275,7 +316,7 @@ fn parse_style_block(lines: &[&str]) -> Vec<SubtitleStyle> {
         if i >= bytes.len() {
             break;
         }
-        // Expect `::cue(.name)`. If not, skip to next `}` to resync.
+        // Expect `::cue`. If not, skip to next `}` to resync.
         let rest = &joined[i..];
         let start_marker = rest.find("::cue");
         if start_marker.is_none() {
@@ -283,15 +324,15 @@ fn parse_style_block(lines: &[&str]) -> Vec<SubtitleStyle> {
         }
         let cue_idx = i + start_marker.unwrap();
         i = cue_idx + "::cue".len();
-        // Optional `(.name)` or `(#id)` or `()`.
-        let mut class_name = String::new();
+        // Optional `(...)` argument. Per WebVTT §8.2.1 the argument is a CSS
+        // selector — we accept class chains, `#id`, element types, and pass
+        // anything more exotic through verbatim in the style name.
+        let mut style_name = String::from("::cue");
         if i < bytes.len() && bytes[i] == b'(' {
             let end = joined[i..].find(')').map(|p| i + p);
             if let Some(end) = end {
                 let inner = joined[i + 1..end].trim();
-                if let Some(name) = inner.strip_prefix('.') {
-                    class_name = name.to_string();
-                }
+                style_name = encode_selector_to_style_name(inner);
                 i = end + 1;
             }
         }
@@ -307,11 +348,11 @@ fn parse_style_block(lines: &[&str]) -> Vec<SubtitleStyle> {
         }
         let brace_close = brace_close.unwrap();
         let body = &joined[brace_open + 1..brace_close];
-        let mut style = SubtitleStyle::new(if class_name.is_empty() {
-            "default".into()
-        } else {
-            class_name
-        });
+        let mut style = SubtitleStyle::new(style_name);
+        // Collect declarations into a key→value map so canonical-order extras
+        // emission below can re-walk them deterministically (the source CSS
+        // order is not authoritative for the round-trip).
+        let mut decls: Vec<(String, String)> = Vec::new();
         for decl in body.split(';') {
             let decl = decl.trim();
             if decl.is_empty() {
@@ -319,14 +360,105 @@ fn parse_style_block(lines: &[&str]) -> Vec<SubtitleStyle> {
             }
             if let Some(colon) = decl.find(':') {
                 let key = decl[..colon].trim().to_ascii_lowercase();
-                let val = decl[colon + 1..].trim();
-                apply_css_prop(&mut style, &key, val);
+                let val = decl[colon + 1..].trim().to_string();
+                decls.push((key, val));
             }
         }
-        styles.push(style);
+        // First pass: land everything we can in `SubtitleStyle` fields.
+        for (key, val) in &decls {
+            apply_css_prop(&mut style, key, val);
+        }
+        // Second pass: gather spec-listed §8.2.1 properties without an IR
+        // home, in canonical spec order. A property repeated in the source
+        // wins on its last occurrence (matching cascade semantics).
+        let mut extras: Vec<(String, String)> = Vec::new();
+        for canonical in EXTRA_CUE_PROPS {
+            if let Some((_, v)) = decls.iter().rev().find(|(k, _)| k == *canonical) {
+                extras.push(((*canonical).to_string(), v.clone()));
+            }
+        }
+        out.push((style, extras));
         i = brace_close + 1;
     }
-    styles
+    out
+}
+
+/// Spec-listed §8.2.1 properties that apply to `::cue` but have no field on
+/// `SubtitleStyle`. Listed in canonical spec order so the per-style metadata
+/// channel re-emits stably across round-trips.
+const EXTRA_CUE_PROPS: &[&str] = &[
+    "opacity",
+    "visibility",
+    "text-shadow",
+    "outline",
+    "white-space",
+    "text-combine-upright",
+    "ruby-position",
+    "line-height",
+];
+
+/// Encode the inner-argument of a `::cue(...)` selector to a style-name string
+/// per the convention documented on [`parse_style_block`].
+fn encode_selector_to_style_name(inner: &str) -> String {
+    let inner = inner.trim();
+    if inner.is_empty() {
+        // `::cue()` is malformed per §8.2.1 but tolerate it: treat as bare
+        // `::cue`.
+        return "::cue".to_string();
+    }
+    if let Some(rest) = inner.strip_prefix('.') {
+        // Class chain — keep the historical "name = class chain" shape.
+        if rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        {
+            return rest.to_string();
+        }
+    }
+    if inner.starts_with('#')
+        && inner[1..]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        // `#id` selector — keep the `#` prefix to disambiguate from class.
+        return inner.to_string();
+    }
+    if inner
+        .chars()
+        .all(|c| c.is_ascii_alphabetic() || c.is_ascii_digit())
+        && inner
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+    {
+        // Bare element-type selector (e.g. `b`, `i`, `c`, `v`, `lang`,
+        // `ruby`, `rt`). Wrap so it survives a parse → write → parse with
+        // the original `::cue(elem)` form (and never collides with a class
+        // named `b`).
+        return format!("::cue({inner})");
+    }
+    // Compound / attribute / pseudo-class — preserve verbatim.
+    format!("::cue({inner})")
+}
+
+/// Inverse of [`encode_selector_to_style_name`] — reconstruct the original
+/// `::cue(...)` selector string for the synthesised writer.
+fn style_name_to_selector(name: &str) -> String {
+    if name == "::cue" {
+        return "::cue".to_string();
+    }
+    if let Some(stripped) = name.strip_prefix("::cue(") {
+        // Already a wrapped form (`::cue(elem)` / `::cue(<compound>)`). Trim
+        // the trailing `)` and re-wrap defensively so a hand-built name that
+        // already includes the `)` still emits cleanly.
+        let inner = stripped.strip_suffix(')').unwrap_or(stripped);
+        return format!("::cue({inner})");
+    }
+    if name.starts_with('#') {
+        return format!("::cue({name})");
+    }
+    // Default: treat as a class chain (the historical convention).
+    format!("::cue(.{name})")
 }
 
 fn apply_css_prop(style: &mut SubtitleStyle, key: &str, val: &str) {
@@ -1509,5 +1641,309 @@ mod tests {
         let body_out = first_cue_body(src);
         assert!(body_out.contains("<custom>"), "body: {body_out}");
         assert!(body_out.contains('x'), "body: {body_out}");
+    }
+
+    // -------------------------------------------------------------------
+    // STYLE blocks — §8.2.1 property + selector coverage.
+
+    /// Strip the verbatim extradata so the writer rebuilds STYLE blocks from
+    /// the in-memory styles + per-style metadata channel.
+    fn write_synth(t: &SubtitleTrack) -> String {
+        let mut t = t.clone();
+        t.extradata.clear();
+        String::from_utf8(write(&t)).unwrap()
+    }
+
+    #[test]
+    fn cue_bare_selector_with_no_argument_round_trips() {
+        // `::cue { ... }` (no argument) is the most common form in real-world
+        // VTT exports — historically our parser collapsed it to a style
+        // literally named `default`. The new encoding tags it `"::cue"`, and
+        // the synthesised writer reconstructs the `::cue` selector verbatim.
+        let src = "WEBVTT\n\nSTYLE\n::cue { color: white; background-color: black; }\n\n00:00:01.000 --> 00:00:02.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let s = t
+            .styles
+            .iter()
+            .find(|s| s.name == "::cue")
+            .expect("bare ::cue style captured");
+        assert_eq!(s.primary_color.unwrap().0, 255);
+        assert_eq!(s.back_color.unwrap().0, 0);
+        let out = write_synth(&t);
+        // Selector preserved verbatim (no spurious `(.…)` wrapping).
+        assert!(out.contains("\n::cue {\n"), "round-trip: {out}");
+        // Re-parsing the synthesised form must yield the same style.
+        let t2 = parse(out.as_bytes()).unwrap();
+        assert!(t2.styles.iter().any(|s| s.name == "::cue"));
+    }
+
+    #[test]
+    fn cue_id_selector_round_trips() {
+        // `::cue(#cueId)` targets a specific cue by its id (WebVTT §8.2.1).
+        let src = "WEBVTT\n\nSTYLE\n::cue(#warn) { color: red; }\n\nwarn\n00:00:01.000 --> 00:00:02.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert!(
+            t.styles.iter().any(|s| s.name == "#warn"),
+            "styles: {:?}",
+            t.styles
+        );
+        let out = write_synth(&t);
+        assert!(out.contains("::cue(#warn)"), "round-trip: {out}");
+    }
+
+    #[test]
+    fn cue_type_selector_round_trips() {
+        // `::cue(b)` / `::cue(i)` / `::cue(c)` — element-type selectors per
+        // the table in §8.2.1. Wrap the name so it can't collide with a class
+        // named `b`.
+        let src = "WEBVTT\n\nSTYLE\n::cue(b) { color: yellow; }\n\n00:00:01.000 --> 00:00:02.000\n<b>hi</b>\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert!(t.styles.iter().any(|s| s.name == "::cue(b)"));
+        let out = write_synth(&t);
+        assert!(out.contains("::cue(b) {"), "round-trip: {out}");
+    }
+
+    #[test]
+    fn class_chain_selector_keeps_dot_chain_in_style_name() {
+        // `::cue(.a.b.c)` — the historical name convention concatenates the
+        // chain so consumers can still look it up.
+        let src = "WEBVTT\n\nSTYLE\n::cue(.a.b.c) { color: lime; }\n\n00:00:01.000 --> 00:00:02.000\n<c.a.b.c>x</c>\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert!(t.styles.iter().any(|s| s.name == "a.b.c"));
+        let out = write_synth(&t);
+        assert!(out.contains("::cue(.a.b.c)"), "round-trip: {out}");
+    }
+
+    #[test]
+    fn opacity_visibility_text_shadow_outline_round_trip_via_metadata() {
+        // Four of §8.2.1's spec-listed properties land in per-style metadata
+        // because `SubtitleStyle` has no fields for them. The synthesised
+        // writer must re-emit them in canonical spec order so the round-trip
+        // is byte-stable.
+        let src = "\
+WEBVTT
+
+STYLE
+::cue(.fancy) {
+  color: white;
+  opacity: 0.75;
+  visibility: visible;
+  text-shadow: 1px 1px 2px black;
+  outline: 2px solid red;
+}
+
+00:00:01.000 --> 00:00:02.000
+<c.fancy>hi</c>
+";
+        let t = parse(src.as_bytes()).unwrap();
+        // All four extras captured.
+        let extras: Vec<&str> = t
+            .metadata
+            .iter()
+            .filter(|(k, _)| k.starts_with("vtt_style.fancy."))
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert!(extras.contains(&"vtt_style.fancy.opacity"), "{extras:?}");
+        assert!(extras.contains(&"vtt_style.fancy.visibility"), "{extras:?}");
+        assert!(
+            extras.contains(&"vtt_style.fancy.text-shadow"),
+            "{extras:?}"
+        );
+        assert!(extras.contains(&"vtt_style.fancy.outline"), "{extras:?}");
+        // Value preserved verbatim.
+        let opacity = t
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_style.fancy.opacity")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_eq!(opacity, "0.75");
+        // Synthesised writer re-emits them in canonical spec order
+        // (opacity → visibility → text-shadow → outline → …).
+        let out = write_synth(&t);
+        let op_idx = out.find("opacity:").unwrap();
+        let vis_idx = out.find("visibility:").unwrap();
+        let ts_idx = out.find("text-shadow:").unwrap();
+        let out_idx = out.find("outline:").unwrap();
+        assert!(
+            op_idx < vis_idx && vis_idx < ts_idx && ts_idx < out_idx,
+            "spec order broken: {out}"
+        );
+        // Re-parse must yield identical extras.
+        let t2 = parse(out.as_bytes()).unwrap();
+        let opacity2 = t2
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_style.fancy.opacity")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_eq!(opacity2, "0.75");
+    }
+
+    #[test]
+    fn white_space_text_combine_ruby_position_line_height_round_trip() {
+        // The remaining four §8.2.1 extras the IR doesn't model.
+        let src = "\
+WEBVTT
+
+STYLE
+::cue(.jp) {
+  white-space: pre-wrap;
+  text-combine-upright: all;
+  ruby-position: over;
+  line-height: 1.4;
+}
+
+00:00:01.000 --> 00:00:02.000
+<c.jp>x</c>
+";
+        let t = parse(src.as_bytes()).unwrap();
+        for prop in [
+            "white-space",
+            "text-combine-upright",
+            "ruby-position",
+            "line-height",
+        ] {
+            let key = format!("vtt_style.jp.{prop}");
+            assert!(
+                t.metadata.iter().any(|(k, _)| k == &key),
+                "missing extra: {key}"
+            );
+        }
+        let out = write_synth(&t);
+        assert!(out.contains("white-space: pre-wrap"), "{out}");
+        assert!(out.contains("text-combine-upright: all"), "{out}");
+        assert!(out.contains("ruby-position: over"), "{out}");
+        assert!(out.contains("line-height: 1.4"), "{out}");
+    }
+
+    #[test]
+    fn background_color_round_trips_to_back_color_field() {
+        // `background-color` lands in `SubtitleStyle.back_color`; the writer
+        // must re-emit it (previously the synthesised path dropped it).
+        let src = "WEBVTT\n\nSTYLE\n::cue(.boxed) { background-color: #102030; }\n\n00:00:01.000 --> 00:00:02.000\n<c.boxed>x</c>\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let s = t.style("boxed").unwrap();
+        assert_eq!(s.back_color, Some((0x10, 0x20, 0x30, 0xFF)));
+        let out = write_synth(&t);
+        assert!(out.contains("background-color:"), "round-trip: {out}");
+    }
+
+    #[test]
+    fn unknown_property_is_silently_dropped() {
+        // Properties the spec does not list in §8.2.1 (e.g. `cursor`,
+        // `display`) must be dropped — no IR field, no metadata channel.
+        let src = "WEBVTT\n\nSTYLE\n::cue(.x) { color: red; cursor: pointer; display: none; }\n\n00:00:01.000 --> 00:00:02.000\n<c.x>x</c>\n";
+        let t = parse(src.as_bytes()).unwrap();
+        // The cascaded color landed.
+        let s = t.style("x").unwrap();
+        assert_eq!(s.primary_color.unwrap().0, 255);
+        // No `cursor` or `display` extra leaked through.
+        assert!(!t
+            .metadata
+            .iter()
+            .any(|(k, _)| k == "vtt_style.x.cursor" || k == "vtt_style.x.display"));
+    }
+
+    #[test]
+    fn extras_emit_in_canonical_order_regardless_of_source_order() {
+        // Source order shuffled; writer must still emit
+        // opacity → visibility → text-shadow → outline → white-space → ….
+        let src = "WEBVTT\n\nSTYLE\n::cue(.s) { outline: 1px solid red; line-height: 2; opacity: 0.5; visibility: hidden; }\n\n00:00:01.000 --> 00:00:02.000\n<c.s>x</c>\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let out = write_synth(&t);
+        let op = out.find("opacity:").unwrap();
+        let vi = out.find("visibility:").unwrap();
+        let ou = out.find("outline:").unwrap();
+        let lh = out.find("line-height:").unwrap();
+        assert!(
+            op < vi && vi < ou && ou < lh,
+            "canonical order broken: {out}"
+        );
+    }
+
+    #[test]
+    fn parse_style_block_existing_test_still_works() {
+        // The historical `class_name == "yellow"` lookup must keep working
+        // after the selector-encoding refactor.
+        let src = "WEBVTT\n\nSTYLE\n::cue(.yellow) { color: yellow; font-weight: bold; }\n\n00:00:01.000 --> 00:00:02.000\n<c.yellow>hi</c>\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let s = t.style("yellow").unwrap();
+        assert!(s.bold);
+        assert!(s.primary_color.is_some());
+    }
+
+    #[test]
+    fn multiple_style_blocks_each_with_extras() {
+        // Two `::cue(...)` rules in two separate STYLE blocks — both sets of
+        // extras must land under their own per-style key prefix.
+        let src = "\
+WEBVTT
+
+STYLE
+::cue(.a) { color: red; opacity: 0.5; }
+
+STYLE
+::cue(.b) { color: blue; line-height: 1.5; }
+
+00:00:01.000 --> 00:00:02.000
+<c.a>x</c>
+";
+        let t = parse(src.as_bytes()).unwrap();
+        assert!(t.metadata.iter().any(|(k, _)| k == "vtt_style.a.opacity"));
+        assert!(t
+            .metadata
+            .iter()
+            .any(|(k, _)| k == "vtt_style.b.line-height"));
+        let out = write_synth(&t);
+        // Both rules survive and stay paired with the right extras.
+        assert!(out.contains("::cue(.a) {"), "{out}");
+        assert!(out.contains("::cue(.b) {"), "{out}");
+        let a_block = &out[out.find("::cue(.a)").unwrap()..out.find("::cue(.b)").unwrap()];
+        assert!(a_block.contains("opacity:"), "a block: {a_block}");
+        assert!(
+            !a_block.contains("line-height:"),
+            "a block leaked b's extras: {a_block}"
+        );
+    }
+
+    #[test]
+    fn synthesised_write_full_roundtrip_is_byte_stable() {
+        // Parse → drop extradata → synth-write → re-parse → all extras
+        // identical (byte-stable round-trip).
+        let src = "\
+WEBVTT
+
+STYLE
+::cue(.full) {
+  color: white;
+  background-color: black;
+  opacity: 0.9;
+  visibility: visible;
+  text-shadow: 1px 1px 0 black;
+  outline: 1px solid white;
+  white-space: pre-wrap;
+  text-combine-upright: all;
+  ruby-position: under;
+  line-height: 1.2;
+}
+
+00:00:01.000 --> 00:00:02.000
+<c.full>x</c>
+";
+        let t1 = parse(src.as_bytes()).unwrap();
+        let out = write_synth(&t1);
+        let t2 = parse(out.as_bytes()).unwrap();
+        let collect_extras = |t: &SubtitleTrack| -> Vec<(String, String)> {
+            let mut v: Vec<(String, String)> = t
+                .metadata
+                .iter()
+                .filter(|(k, _)| k.starts_with("vtt_style.full."))
+                .cloned()
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(collect_extras(&t1), collect_extras(&t2));
     }
 }
