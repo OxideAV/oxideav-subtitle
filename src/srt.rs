@@ -176,7 +176,7 @@ fn append_segments(segments: &[Segment], out: &mut String) {
 fn escape_text(s: &str) -> String {
     // Don't escape `<` — SRT is permissive and real files are full of
     // unescaped angle brackets. We only need to avoid smuggling a known
-    // tag into plain text. This is the same behaviour as libass.
+    // tag into plain text.
     s.to_string()
 }
 

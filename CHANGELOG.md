@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `src/srt.rs`: trimmed a decorative comparison clause from the
+  `escape_text` doc comment. The behavioural statement (keep `<`
+  unescaped so the writer doesn't accidentally smuggle a recognised
+  inline tag) is preserved; only the trailing attribution to an
+  unrelated implementation is dropped. Pure prose change, no
+  behaviour or test delta.
+
 ### Added
 
 - WebVTT `STYLE` block §8.2.1 property + selector coverage now matches
