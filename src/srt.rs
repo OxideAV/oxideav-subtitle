@@ -21,50 +21,96 @@ use oxideav_core::{Error, Result, Segment, SubtitleCue};
 use crate::ir::{SourceFormat, SubtitleTrack};
 
 /// Parse a UTF-8 (or UTF-8 with a leading BOM) SRT payload into a track.
+///
+/// The parser is tolerant of three classes of malformed-but-recoverable
+/// input that real-world files exhibit:
+///
+/// * **Leading preamble** — junk lines before the first cue (a stray
+///   header dumped by a concatenator, a PEM-armoured envelope, a
+///   leftover BOM-or-blank shim). Anything before the first parseable
+///   timing line is skipped, with the line immediately before that
+///   timing line taken as the optional index if it is digits-only.
+/// * **Duplicate-index rows** — `N\nN\n<timing>` patterns that some
+///   batch editors emit when re-numbering with a buggy template. The
+///   second copy is absorbed into the index-line slot rather than
+///   killing the cue.
+/// * **Whitespace-only continuation lines** inside a cue body. The
+///   body terminates only on a truly empty line (length 0 after the
+///   line-ending normaliser in `encoding`) or on a new timing line.
+///   `"A\n   \nB"` round-trips as a three-line cue body, not as a
+///   premature cue boundary that drops `B`.
+///
+/// Trailing blank lines, missing trailing newline, missing index line,
+/// CR-only line endings, and the leading UTF-8 / UTF-16 BOMs are all
+/// handled upstream in `crate::encoding`.
 pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
     let text = crate::encoding::decode_subtitle_text(bytes);
     let mut cues: Vec<SubtitleCue> = Vec::new();
 
-    // Normalise line endings and walk cue-by-cue. We don't split on blank
-    // lines alone because some files use CR-LF-CR-LF; a blank line is any
-    // line whose trimmed form is empty.
-    let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+    // `encoding::decode_subtitle_text` has already collapsed every line
+    // terminator (CRLF, lone CR, LF) to LF, so a "truly empty line" is
+    // simply `lines[i].is_empty()`. We keep a separate "is_blank" test
+    // for the OUTER cue boundary — that one trims whitespace so a row
+    // of spaces between cues isn't mistaken for a body continuation.
+    let lines: Vec<&str> = text.split('\n').collect();
     let mut i = 0;
     while i < lines.len() {
-        // Skip blank lines between cues.
+        // Skip blank-or-whitespace-only lines between cues.
         while i < lines.len() && lines[i].trim().is_empty() {
             i += 1;
         }
         if i >= lines.len() {
             break;
         }
-        // Optional index line (a positive integer). Skip it if present.
-        // SRT in the wild sometimes omits the index, so we tolerate.
-        let maybe_index = lines[i].trim();
-        if maybe_index.chars().all(|c| c.is_ascii_digit()) && !maybe_index.is_empty() {
-            i += 1;
-            if i >= lines.len() {
-                break;
-            }
-        }
 
-        // Timing line.
-        let timing_line = lines[i].trim();
-        i += 1;
-        let (start_us, end_us) = match parse_timing_line(timing_line) {
-            Some(t) => t,
+        // Forward-scan within the current non-blank block for the
+        // timing line. Anything before it is preamble (typically the
+        // optional index, but tolerates leading junk and dup-index
+        // rows). The block ends at the next blank line; that cap stops
+        // a scan from wandering into the following cue's body.
+        let block_end = lines[i..]
+            .iter()
+            .position(|l| l.trim().is_empty())
+            .map(|n| i + n)
+            .unwrap_or(lines.len());
+
+        let timing_at = lines[i..block_end]
+            .iter()
+            .position(|l| parse_timing_line(l.trim()).is_some())
+            .map(|n| i + n);
+
+        let t_idx = match timing_at {
+            Some(j) => j,
             None => {
-                // Skip malformed cue until the next blank line.
-                while i < lines.len() && !lines[i].trim().is_empty() {
-                    i += 1;
-                }
+                // No timing line in this block — entire block is junk
+                // (leading preamble, PEM-armoured envelope, a dropped
+                // cue, …). Skip to the next blank and try again.
+                i = block_end;
                 continue;
             }
         };
 
-        // Text block — up to the next blank line.
+        // `parse_timing_line` re-runs cheaply on the already-located row.
+        let (start_us, end_us) = parse_timing_line(lines[t_idx].trim()).expect("just matched");
+        i = t_idx + 1;
+
+        // Text block — terminates on a TRULY empty line (length 0 after
+        // newline normalisation) or on a new timing line. A line that
+        // contains only whitespace is preserved as a body line so
+        // `"A\n   \nB"` round-trips as three body lines rather than
+        // truncating to `"A"`.
         let mut text_lines: Vec<&str> = Vec::new();
-        while i < lines.len() && !lines[i].trim().is_empty() {
+        while i < lines.len() {
+            if lines[i].is_empty() {
+                break;
+            }
+            if parse_timing_line(lines[i].trim()).is_some() {
+                // Look-ahead: a row whose ONLY content is a timing
+                // line is a new cue boundary, even without an
+                // intervening blank line. SRT in the wild from some
+                // batch editors omits the blank between cues.
+                break;
+            }
             text_lines.push(lines[i]);
             i += 1;
         }
@@ -523,26 +569,42 @@ pub(crate) fn cue_to_bytes(cue: &SubtitleCue) -> Vec<u8> {
 }
 
 /// Parse one cue (as emitted by [`cue_to_bytes`]) back into a [`SubtitleCue`].
+///
+/// Tolerates leading preamble (junk header lines / dup-index / BOM
+/// shim) the same way [`parse`] does: scans forward within the leading
+/// non-blank block for the timing line and treats everything before it
+/// as discardable.
 pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
     let text = crate::encoding::decode_subtitle_text(bytes);
-    let mut lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
-    // Optional leading blank lines.
-    while lines.first().map(|l| l.trim().is_empty()).unwrap_or(false) {
-        lines.remove(0);
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut start = 0;
+    while start < lines.len() && lines[start].trim().is_empty() {
+        start += 1;
     }
-    // Optional leading index line.
-    if let Some(first) = lines.first() {
-        if first.trim().chars().all(|c| c.is_ascii_digit()) && !first.trim().is_empty() {
-            lines.remove(0);
-        }
-    }
-    if lines.is_empty() {
+    if start >= lines.len() {
         return Err(Error::invalid("SRT: empty cue payload"));
     }
-    let timing = lines.remove(0);
-    let (start_us, end_us) = parse_timing_line(timing.trim())
+    let block_end = lines[start..]
+        .iter()
+        .position(|l| l.trim().is_empty())
+        .map(|n| start + n)
+        .unwrap_or(lines.len());
+    let t_idx = (start..block_end)
+        .find(|&j| parse_timing_line(lines[j].trim()).is_some())
         .ok_or_else(|| Error::invalid("SRT: cue has no valid timing"))?;
-    let body = lines.join("\n");
+    let (start_us, end_us) = parse_timing_line(lines[t_idx].trim()).expect("just matched");
+
+    let mut body_lines: Vec<&str> = Vec::new();
+    for &l in &lines[t_idx + 1..] {
+        if l.is_empty() {
+            break;
+        }
+        if parse_timing_line(l.trim()).is_some() {
+            break;
+        }
+        body_lines.push(l);
+    }
+    let body = body_lines.join("\n");
     let segments = parse_inline_tags(body.trim_end());
     Ok(SubtitleCue {
         start_us,
@@ -612,5 +674,111 @@ mod tests {
     #[test]
     fn looks_like_srt_false() {
         assert!(!looks_like_srt(b"WEBVTT\n\n"));
+    }
+
+    // -----------------------------------------------------------------
+    // Robustness fixes — leading preamble, dup-index, embedded
+    // whitespace-only continuation lines, missing inter-cue blank,
+    // CRLF-only trailing blanks.
+
+    #[test]
+    fn leading_garbage_line_without_blank_is_skipped() {
+        // A header line glued straight to the first cue (no blank
+        // separator) previously aborted the entire parse. Forward-scan
+        // for the timing line lets the cue survive.
+        let src = "Some header\n1\n00:00:01,000 --> 00:00:02,000\nhi\n\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        assert_eq!(t.cues[0].start_us, 1_000_000);
+    }
+
+    #[test]
+    fn two_leading_garbage_lines_without_blank_are_skipped() {
+        let src = "Junk one\nJunk two\n1\n00:00:01,000 --> 00:00:02,000\nhi\n\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+    }
+
+    #[test]
+    fn pem_style_armoured_prefix_is_tolerated() {
+        // Concatenator dumps occasionally leave a PEM-style envelope
+        // before the SRT body. Each envelope line is part of one
+        // non-blank block that holds no timing line — the entire
+        // block is discarded and parsing resumes at the next blank.
+        let src = "-----BEGIN ENVELOPE-----\nfoo\nbar\n-----END ENVELOPE-----\n\n\
+                   1\n00:00:01,000 --> 00:00:02,000\nhi\n\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        assert_eq!(t.cues[0].start_us, 1_000_000);
+    }
+
+    #[test]
+    fn duplicate_index_line_does_not_drop_the_cue() {
+        // Batch editors that re-number with a buggy template emit
+        // `N\nN\n<timing>`. The second copy used to be mistaken for
+        // the timing line, the parse failed, and the entire cue was
+        // dropped. Now the forward-scan walks past it.
+        let src = "1\n00:00:01,000 --> 00:00:02,000\nhi\n\n\
+                   2\n2\n00:00:03,000 --> 00:00:04,000\nbye\n\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 2);
+        assert_eq!(t.cues[1].start_us, 3_000_000);
+    }
+
+    #[test]
+    fn whitespace_only_internal_line_stays_in_body() {
+        // A row of spaces between two text lines is body content,
+        // not a cue boundary. The old `lines[i].trim().is_empty()`
+        // body terminator dropped `B` and replaced the blank with a
+        // premature end-of-cue.
+        let src = "1\n00:00:01,000 --> 00:00:02,000\nA\n   \nB\n\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        // The body now contains three segments — text "A", a line
+        // break, the whitespace continuation, another line break,
+        // and "B". We verify the round-trip survives the data
+        // rather than assert on a specific Segment shape so a future
+        // inline-markup parser refactor doesn't snag this test.
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(out.contains("A\n"), "A missing: {out}");
+        assert!(out.contains("B\n"), "B missing: {out}");
+    }
+
+    #[test]
+    fn two_cues_with_no_blank_between_are_split_on_timing_line() {
+        // Some batch editors omit the inter-cue blank entirely. The
+        // body terminator now recognises a new timing line as a cue
+        // boundary even without an intervening blank.
+        let src = "1\n00:00:01,000 --> 00:00:02,000\nhi\n\
+                   2\n00:00:03,000 --> 00:00:04,000\nbye\n\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 2);
+        assert_eq!(t.cues[0].start_us, 1_000_000);
+        assert_eq!(t.cues[1].start_us, 3_000_000);
+    }
+
+    #[test]
+    fn trailing_crlf_blank_lines_are_tolerated() {
+        // `encoding::decode_subtitle_text` already maps CRLF to LF.
+        // Verify that several trailing blank lines after the final
+        // cue do not synthesise phantom cues or panic.
+        let src = "1\r\n00:00:01,000 --> 00:00:02,000\r\nhi\r\n\r\n\r\n\r\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+    }
+
+    #[test]
+    fn missing_trailing_newline_is_tolerated() {
+        let src = "1\n00:00:01,000 --> 00:00:02,000\nhi";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+    }
+
+    #[test]
+    fn bytes_to_cue_skips_pem_preamble() {
+        let src = "-----BEGIN STUFF-----\n7\n00:00:05,000 --> 00:00:06,000\nhi";
+        let cue = bytes_to_cue(src.as_bytes()).unwrap();
+        assert_eq!(cue.start_us, 5_000_000);
+        assert_eq!(cue.end_us, 6_000_000);
     }
 }

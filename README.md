@@ -263,6 +263,26 @@ multi-byte codepoint (`é`, `漢`, …) adjacent to a tag boundary into its
 Latin-1 continuation bytes, re-emitting it as mojibake; that path now
 matches the WebVTT tokeniser and round-trips such text byte-for-byte.
 
+## SRT structural tolerance
+
+SRT in the wild routinely diverges from the on-paper
+`index → timing → text → blank` template. The parser absorbs three
+recoverable shapes without losing cues:
+
+* **Leading preamble** — junk lines or a PEM-style armoured envelope
+  before the first cue, with or without an intervening blank.
+* **Duplicate-index rows** — `N\nN\n<timing>` patterns from buggy
+  re-numbering templates. The second copy is absorbed into the
+  index-line slot rather than killing the cue.
+* **Whitespace-only continuation lines** inside a cue body, e.g.
+  `"A\n   \nB"`. The body terminator triggers only on a truly empty
+  line or on a new timing line — whitespace-only lines remain body
+  content, and two cues with no intervening blank are still split.
+
+Combined with the encoding tolerance above, the parse is
+forward-progress-preserving: any cue with a parseable timing line is
+recovered even if surrounding rows are malformed.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

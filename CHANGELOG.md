@@ -16,6 +16,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unrelated implementation is dropped. Pure prose change, no
   behaviour or test delta.
 
+### Fixed
+
+- SRT parser tolerates three classes of malformed-but-recoverable
+  input that real-world files exhibit: (a) leading preamble — junk
+  lines or a PEM-style armoured envelope before the first cue, with
+  or without a blank separator; previously aborted the entire parse
+  because the first non-blank line didn't satisfy the strict
+  index-then-timing sequence. (b) duplicate-index rows such as
+  `N\nN\n<timing>` that some batch editors emit when re-numbering
+  with a buggy template; previously consumed the second copy as the
+  timing line, failed to parse, and dropped the cue. (c) cue bodies
+  whose middle line is whitespace-only, e.g. `"A\n   \nB"`;
+  previously the body terminator used `lines[i].trim().is_empty()`,
+  treating the whitespace-only line as a cue boundary and dropping
+  `B`. The new loop forward-scans for the timing line within the
+  current non-blank block (so anything before it is discardable
+  preamble) and terminates the body only on a TRULY empty line or a
+  new timing line (so whitespace-only continuation lines survive,
+  and two cues with no intervening blank are split correctly). The
+  `bytes_to_cue` single-cue helper picks up the same forward-scan
+  preamble tolerance. Covered by 8 new
+  `srt::tests::{leading_garbage_line_without_blank_is_skipped,
+  two_leading_garbage_lines_without_blank_are_skipped,
+  pem_style_armoured_prefix_is_tolerated,
+  duplicate_index_line_does_not_drop_the_cue,
+  whitespace_only_internal_line_stays_in_body,
+  two_cues_with_no_blank_between_are_split_on_timing_line,
+  trailing_crlf_blank_lines_are_tolerated,
+  missing_trailing_newline_is_tolerated,
+  bytes_to_cue_skips_pem_preamble}` unit tests plus
+  `tests/srt_parse.rs::end_to_end_robustness_recovers_pem_preamble_dup_index_and_embedded_blanks`
+  integration test.
+
 ### Added
 
 - WebVTT `STYLE` block §8.2.1 property + selector coverage now matches

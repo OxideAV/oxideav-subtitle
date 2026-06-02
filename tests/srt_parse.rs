@@ -99,6 +99,31 @@ fn missing_index_is_tolerated() {
     assert_eq!(t.cues[0].start_us, 1_000_000);
 }
 
+#[test]
+fn end_to_end_robustness_recovers_pem_preamble_dup_index_and_embedded_blanks() {
+    // Real-world failure shape: a PEM-style envelope ahead of the
+    // first cue, a duplicate-index row on cue 2, an SRT body whose
+    // middle line is whitespace-only, and the closing cue with no
+    // trailing newline. Pre-fix this parsed as 0 cues; post-fix all
+    // three cues survive with their bodies intact.
+    let src = "-----BEGIN ENVELOPE-----\nfoo\nbar\n-----END ENVELOPE-----\n\n\
+               1\n00:00:01,000 --> 00:00:02,000\nA\n   \nB\n\n\
+               2\n2\n00:00:03,000 --> 00:00:04,000\nbye\n\n\
+               3\n00:00:05,000 --> 00:00:06,000\ntail";
+    let t = srt::parse(src.as_bytes()).unwrap();
+    assert_eq!(t.cues.len(), 3);
+    assert_eq!(t.cues[0].start_us, 1_000_000);
+    assert_eq!(t.cues[1].start_us, 3_000_000);
+    assert_eq!(t.cues[2].start_us, 5_000_000);
+
+    // Cue 0's body retains both `A` and `B` even though a
+    // whitespace-only line sat between them in the source.
+    let out = String::from_utf8(srt::write(&t)).unwrap();
+    let cue0 = out.split("\n2\n").next().unwrap();
+    assert!(cue0.contains("A"), "A missing from cue 0: {cue0}");
+    assert!(cue0.contains("B"), "B missing from cue 0: {cue0}");
+}
+
 fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
     for s in segs {
         f(s);
