@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- WebVTT §3.4 cue-identifier round-trip. The parser now captures every
+  per-cue identifier (the optional line immediately before the cue
+  timings line) into a `vtt_cue_id.<idx>` track-metadata entry, mirroring
+  the existing `vtt_cue_extra.<idx>` and `vtt_note.<idx>` channels. The
+  synthesised (no-extradata) writer prepends the captured identifier on
+  its own line ahead of the timing line so a parse → drop-extradata →
+  write → parse cycle reproduces the original identifier byte-for-byte.
+  Both textual ids (used by the §8.2.1 `::cue(#id)` style selector) and
+  numeric ids (carried over from SRT-style authoring tools) survive;
+  empty identifiers are skipped at write time so a stray blank line
+  cannot sneak in. Cues that lack an identifier round-trip unchanged
+  (no spurious id metadata written, no spurious id line emitted). When a
+  NOTE comment block sits between two identified cues the writer
+  interleaves both deterministically — NOTE block, blank separator, next
+  cue's identifier, then the timing line.
 - WebVTT §4.1 comment-block (`NOTE …`) round-trip. The parser now
   captures every comment block — single-line, multi-line, or the
   bare-token form (`NOTE` followed by a newline) — into per-block

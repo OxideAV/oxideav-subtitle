@@ -184,6 +184,34 @@ extradata) the writer reconstructs a complete REGION block from the
 style + `vtt_region.<id>` metadata, so all five settings survive the
 synthesised write path too.
 
+## WebVTT cue identifiers
+
+WebVTT §3.4 lets a cue carry an optional identifier on the line immediately
+before the cue timings line. The IR `SubtitleCue` has no `id` field, so the
+parser captures every per-cue identifier into a `vtt_cue_id.<idx>`
+track-metadata entry, mirroring the proven `vtt_cue_extra.<idx>` channel.
+The synthesised (no-extradata) writer prepends the captured identifier on
+its own line before the timing line, so a parse → write → parse cycle is
+byte-stable for cue ids — including the spec's two interop shapes:
+
+* Textual ids (`intro`, `chapter-2`, `warn`) used by the WebVTT §8.2.1
+  `::cue(#id)` selector — already worked at the STYLE end; now the
+  identifier also re-emits on the cue itself.
+* Numeric ids (`1`, `42`, …) carried over from SRT-style authoring tools
+  that recycle the cue index. Per §3.4 any sequence that doesn't contain
+  `-->` qualifies, so a bare digit is preserved verbatim rather than
+  mistaken for part of the timing line.
+
+The id slot is per-cue, so a track with a mix of identified and
+unidentified cues round-trips cue-for-cue. When a NOTE comment block sits
+between two identified cues the writer interleaves both: NOTE first
+(against its own `vtt_note_pos.<idx>` slot), then a blank separator, then
+the next cue's identifier, then the timing line. Empty identifier strings
+are skipped at write time so a stray blank line cannot sneak in. The
+single-cue codec path (`cue_to_bytes` / `bytes_to_cue`) has no track
+context and therefore neither emits nor consumes the id field — that path
+remains a pure timing+body wire shape.
+
 ## WebVTT NOTE comment blocks
 
 WebVTT §4.1 comment blocks (`NOTE …`) round-trip end-to-end. The parser

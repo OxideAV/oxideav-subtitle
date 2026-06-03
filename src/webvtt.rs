@@ -288,7 +288,21 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
             .iter()
             .find(|(k, _)| k.strip_prefix("vtt_cue_extra.") == Some(idx.to_string().as_str()))
             .map(|(_, v)| v.as_str());
+        // §3.4 cue identifier line, captured at parse time into
+        // `vtt_cue_id.<idx>`. Emitted on the line before the cue timings,
+        // matching the source layout.
+        let cue_id = track
+            .metadata
+            .iter()
+            .find(|(k, _)| k.strip_prefix("vtt_cue_id.") == Some(idx.to_string().as_str()))
+            .map(|(_, v)| v.as_str());
         out.push('\n');
+        if let Some(id) = cue_id {
+            if !id.is_empty() {
+                out.push_str(id);
+                out.push('\n');
+            }
+        }
         out.push_str(&format_timing_line_with_extras(cue, extras));
         out.push('\n');
         out.push_str(&render_segments(&cue.segments));
@@ -709,14 +723,19 @@ fn fmt_pct(v: f32) -> String {
 fn parse_cue_block(block: &[&str], track: &mut SubtitleTrack) {
     let mut iter = block.iter().peekable();
     let first = **iter.peek().unwrap();
-    let (timing_line, skip_first) = if first.contains("-->") {
-        (first, 1)
+    let (cue_id, timing_line, skip_first) = if first.contains("-->") {
+        (None, first, 1)
     } else {
-        // Optional id line; next must be timing.
+        // Optional WebVTT cue identifier line (§3.4). Per spec, the
+        // identifier is any sequence not containing the substring `-->`
+        // and not containing CR or LF; the split-on-blank-lines block
+        // splitter already excludes CR/LF, so any first-line text that
+        // doesn't carry `-->` qualifies as a cue identifier. The next
+        // line must be the cue timings line.
         if block.len() < 2 {
             return;
         }
-        (block[1], 2)
+        (Some(first), block[1], 2)
     };
 
     let parsed = match parse_timing_full(timing_line) {
@@ -739,6 +758,21 @@ fn parse_cue_block(block: &[&str], track: &mut SubtitleTrack) {
         track
             .metadata
             .push((format!("vtt_cue_extra.{cue_idx}"), parsed.extras));
+    }
+    // §3.4 WebVTT cue identifier — the IR `SubtitleCue` carries no `id`
+    // field, so stash the identifier verbatim into a per-cue
+    // `vtt_cue_id.<idx>` metadata channel, mirroring the existing
+    // `vtt_cue_extra.<idx>` pattern. The writer prepends the identifier
+    // line ahead of the timing line so a parse → write → parse cycle is
+    // byte-stable. Empty identifiers are skipped (the block splitter
+    // already strips blank lines, but the safety net keeps a stray empty
+    // string from emitting a spurious blank line at write time).
+    if let Some(id) = cue_id {
+        if !id.is_empty() {
+            track
+                .metadata
+                .push((format!("vtt_cue_id.{cue_idx}"), id.to_string()));
+        }
     }
     track.cues.push(SubtitleCue {
         start_us: parsed.start_us,
@@ -2014,5 +2048,167 @@ STYLE
             v
         };
         assert_eq!(collect_extras(&t1), collect_extras(&t2));
+    }
+
+    // §3.4 WebVTT cue identifier — single cue with a textual id is captured
+    // into `vtt_cue_id.0` and re-emitted on the line before the timing line
+    // by the synthesised writer. The W3C §3.4 note explicitly mentions that
+    // an identifier may be used to reference a cue from script or CSS, so
+    // surfacing it through round-trip is mandatory for byte stability when
+    // re-serialising authored input.
+    #[test]
+    fn parses_cue_identifier_into_metadata() {
+        let src = "WEBVTT\n\nintro\n00:00:01.000 --> 00:00:02.000\nhello\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        let id = t
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_cue_id.0")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(id, Some("intro"));
+    }
+
+    #[test]
+    fn writes_cue_identifier_on_synth_path() {
+        let src = "WEBVTT\n\nintro\n00:00:01.000 --> 00:00:02.000\nhello\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let out = write_synth(&t);
+        // The id line must precede the timing line.
+        let id_pos = out.find("intro\n").expect("id present");
+        let timing_pos = out.find("00:00:01.000 -->").expect("timing present");
+        assert!(id_pos < timing_pos, "id should come before timing: {out:?}");
+    }
+
+    #[test]
+    fn cue_identifier_round_trip_is_byte_stable() {
+        let src = "WEBVTT\n\nintro\n00:00:01.000 --> 00:00:02.000\nhello\n\noutro\n00:00:03.000 --> 00:00:04.000\nbye\n";
+        let t1 = parse(src.as_bytes()).unwrap();
+        let out = write_synth(&t1);
+        let t2 = parse(out.as_bytes()).unwrap();
+        let collect_ids = |t: &SubtitleTrack| -> Vec<(String, String)> {
+            let mut v: Vec<(String, String)> = t
+                .metadata
+                .iter()
+                .filter(|(k, _)| k.starts_with("vtt_cue_id."))
+                .cloned()
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(collect_ids(&t1), collect_ids(&t2));
+        assert_eq!(t1.cues.len(), 2);
+        assert_eq!(t2.cues.len(), 2);
+    }
+
+    #[test]
+    fn mixed_cue_blocks_with_and_without_identifier() {
+        // First cue has id `a`, second cue has no id, third cue has id `c`.
+        // Each id must attach to its own cue index, and the writer must skip
+        // emitting any id line for the cue that lacks one.
+        let src = "WEBVTT\n\na\n00:00:01.000 --> 00:00:02.000\none\n\n00:00:03.000 --> 00:00:04.000\ntwo\n\nc\n00:00:05.000 --> 00:00:06.000\nthree\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 3);
+        let id0 = t
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_cue_id.0")
+            .map(|(_, v)| v.as_str());
+        let id1 = t
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_cue_id.1")
+            .map(|(_, v)| v.as_str());
+        let id2 = t
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_cue_id.2")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(id0, Some("a"));
+        assert_eq!(id1, None);
+        assert_eq!(id2, Some("c"));
+        let out = write_synth(&t);
+        // The id-less cue must not pick up an id line: the block for cue 1
+        // is `00:00:03.000 --> ...\ntwo\n`, with the timing line on the
+        // first non-blank line of the block.
+        assert!(out.contains("\n\n00:00:03.000 --> 00:00:04.000\ntwo\n"));
+        assert!(out.contains("\n\na\n00:00:01.000 --> 00:00:02.000\none\n"));
+        assert!(out.contains("\n\nc\n00:00:05.000 --> 00:00:06.000\nthree\n"));
+    }
+
+    #[test]
+    fn cue_identifier_with_settings_round_trips() {
+        // Spec example: identifier `intro` plus a cue-settings list on the
+        // timing line. Both must survive together so the cue id, the
+        // structured position, AND the unmodelled `vertical` rider come
+        // back the same.
+        let src = "WEBVTT\n\nintro\n00:00:01.000 --> 00:00:02.000 vertical:rl align:start\nhello\n";
+        let t1 = parse(src.as_bytes()).unwrap();
+        let out = write_synth(&t1);
+        let t2 = parse(out.as_bytes()).unwrap();
+        let id1 = t1
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_cue_id.0")
+            .map(|(_, v)| v.as_str());
+        let id2 = t2
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_cue_id.0")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(id1, Some("intro"));
+        assert_eq!(id1, id2);
+        let extra1 = t1
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_cue_extra.0")
+            .map(|(_, v)| v.as_str());
+        let extra2 = t2
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_cue_extra.0")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(extra1, extra2);
+        assert!(extra1.unwrap().contains("vertical:rl"));
+    }
+
+    #[test]
+    fn cue_identifier_numeric_form_round_trips() {
+        // Numeric identifiers (`1`, `42`, …) are common in real-world authoring
+        // tools that recycle SRT-style cue indices. Per §3.4 the identifier is
+        // any sequence that doesn't contain `-->`, so a bare digit qualifies
+        // and must NOT be misread as a timing line. The block splitter feeds
+        // us a fresh block whose first line is `1`; the second is the timing.
+        let src = "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nhello\n\n2\n00:00:03.000 --> 00:00:04.000\nbye\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 2);
+        let id0 = t
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_cue_id.0")
+            .map(|(_, v)| v.as_str());
+        let id1 = t
+            .metadata
+            .iter()
+            .find(|(k, _)| k == "vtt_cue_id.1")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(id0, Some("1"));
+        assert_eq!(id1, Some("2"));
+    }
+
+    #[test]
+    fn cue_identifier_with_notes_interleaves_correctly() {
+        // A NOTE block sits between two identified cues. Both the cue id
+        // emission (§3.4) and the NOTE re-emission (§4.1) must coexist:
+        // the writer first emits any NOTEs queued for the slot, then a
+        // blank line, then the cue id line, then the timing line.
+        let src = "WEBVTT\n\nfirst\n00:00:01.000 --> 00:00:02.000\nA\n\nNOTE between cues\n\nsecond\n00:00:03.000 --> 00:00:04.000\nB\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let out = write_synth(&t);
+        let note_pos = out.find("NOTE between cues").expect("note re-emitted");
+        let second_id_pos = out.find("\nsecond\n").expect("second id present");
+        let second_timing_pos = out.find("00:00:03.000 -->").expect("second timing present");
+        assert!(note_pos < second_id_pos);
+        assert!(second_id_pos < second_timing_pos);
     }
 }
