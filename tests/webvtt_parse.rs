@@ -452,6 +452,54 @@ fn lowercased_note_prefix_is_not_a_comment_block() {
     assert_eq!(t.cues.len(), 1);
 }
 
+#[test]
+fn strict_signature_and_timestamp_validation_end_to_end() {
+    // §4.1 file signature: missing SPACE/TAB separator before header
+    // trailing text means the parser must reject — the previous lenient
+    // implementation silently accepted `WEBVTTHEADER` and dropped the
+    // "HEADER" suffix into trailing-text metadata.
+    let no_sep = b"WEBVTTHEADER\n\n00:00:01.000 --> 00:00:02.000\nhi\n";
+    assert!(webvtt::parse(no_sep).is_err());
+
+    // The valid SPACE / TAB / empty separator cases all parse cleanly.
+    for sep in [" Lang: en", "\tLang: en", ""] {
+        let mut src = String::from("WEBVTT");
+        src.push_str(sep);
+        src.push_str("\n\n00:00:01.000 --> 00:00:02.000\nhi\n");
+        let t = webvtt::parse(src.as_bytes())
+            .unwrap_or_else(|e| panic!("separator {sep:?} should parse: {e:?}"));
+        assert_eq!(t.cues.len(), 1, "separator {sep:?}");
+    }
+
+    // §3.3 timestamp: only the canonical MM:SS.fff or HH:MM:SS.fff shape
+    // is accepted. Non-canonical timings make the cue block fail to match
+    // a timing line and the parser drops the cue rather than silently
+    // mis-interpreting the offset.
+    for bad in [
+        "0:00:01.000 --> 00:00:02.000",  // 1-digit hours
+        "00:0:01.000 --> 00:00:02.000",  // 1-digit minutes
+        "00:00:1.000 --> 00:00:02.000",  // 1-digit seconds
+        "00:00:01 --> 00:00:02",         // missing fraction
+        "00:00:01.00 --> 00:00:02.00",   // 2-digit fraction
+        "00:60:01.000 --> 00:60:02.000", // minutes > 59
+        "00:00:60.000 --> 00:00:61.000", // seconds > 59
+    ] {
+        let src = format!("WEBVTT\n\n{bad}\nhi\n");
+        let t = webvtt::parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 0, "should reject {bad:?}");
+    }
+
+    // The two shapes the spec accepts both parse, and the offsets are
+    // computed correctly.
+    let src = "WEBVTT\n\n01:30.500 --> 02:00.000\nshort\n\n00:00:03.250 --> 00:00:04.750\nlong\n";
+    let t = webvtt::parse(src.as_bytes()).unwrap();
+    assert_eq!(t.cues.len(), 2);
+    assert_eq!(t.cues[0].start_us, 90_500_000);
+    assert_eq!(t.cues[0].end_us, 120_000_000);
+    assert_eq!(t.cues[1].start_us, 3_250_000);
+    assert_eq!(t.cues[1].end_us, 4_750_000);
+}
+
 fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
     for s in segs {
         f(s);

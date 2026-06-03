@@ -84,6 +84,30 @@ this path.
 The bitmap-font path is unaffected by these and continues to honour
 bold / italic / per-run colour as before.
 
+## WebVTT signature and timestamp strictness
+
+The WebVTT parser enforces the §4.1 file-signature production and the
+§3.3 timestamp production literally rather than accepting near-misses.
+
+* The file signature is the byte string `WEBVTT` followed by either a
+  line terminator (no trailing text) or a single U+0020 SPACE / U+0009
+  TAB and then the optional header trailing text. A signature like
+  `WEBVTTHEADER` (no separator) is rejected with a missing-signature
+  error instead of silently treating `HEADER` as trailing metadata.
+* Cue timings are accepted only in the two §3.3 canonical shapes
+  `MM:SS.fff` and `HH:MM:SS.fff`. Minutes and seconds must be exactly
+  two ASCII digits in the range `0..=59`; the fractional component must
+  be exactly three ASCII digits separated by a `.`; the optional hours
+  component, when present, must be two or more ASCII digits.
+  Non-canonical forms (`0:00:01.000`, `00:00:1.000`, `00:00:01`,
+  `00:00:01.00`, `00:60:01.000`, `00:00:60.000`, …) make the cue block
+  fail to recognise a timing line, and the cue is dropped rather than
+  silently turning a malformed offset into a wrong-but-plausible value.
+
+A UTF-8 BOM on the file's first byte still works because the shared
+`encoding::decode_subtitle_text` helper strips it before the parser
+sees the signature line.
+
 ## WebVTT cue settings
 
 The WebVTT timing line's cue settings (WebVTT §3.5) are parsed into the

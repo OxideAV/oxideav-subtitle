@@ -34,10 +34,34 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
         Some(v) => v,
         None => return Err(Error::invalid("WebVTT: empty input")),
     };
-    if !header.starts_with("WEBVTT") {
-        return Err(Error::invalid("WebVTT: missing WEBVTT signature"));
-    }
-    let header_trailing = header["WEBVTT".len()..].trim().to_string();
+    // §4.1 file signature: the file body starts with the string `WEBVTT`,
+    // optionally followed by a single U+0020 SPACE or U+0009 TAB and then
+    // any number of non-LF / non-CR characters (the "header trailing
+    // text"). The signature line is then terminated by a line terminator;
+    // the line-split above already consumed it.
+    //
+    // The previous implementation accepted any prefix-match on `WEBVTT`,
+    // including `WEBVTTHEADER` (no separator), which §4.1 forbids — the
+    // 7th character must be SPACE, TAB, LF, or CR. Reject the missing
+    // separator here.
+    let header_trailing = match header.strip_prefix("WEBVTT") {
+        Some("") => String::new(),
+        Some(rest) => {
+            // Accept a single U+0020 or U+0009 separator, then any number of
+            // additional U+0020 / U+0009 / non-CR/LF characters as the
+            // header trailing text. The line-split has already eaten the
+            // line terminator, so we know `rest` contains no LF.
+            let first = rest.as_bytes()[0];
+            if first != b' ' && first != b'\t' {
+                return Err(Error::invalid("WebVTT: missing WEBVTT signature"));
+            }
+            // The spec's "header trailing text" is the substring after the
+            // separator; capture it trimmed so a parse → write round-trip
+            // normalises trailing whitespace.
+            rest[1..].trim().to_string()
+        }
+        None => return Err(Error::invalid("WebVTT: missing WEBVTT signature")),
+    };
 
     let mut track = SubtitleTrack {
         source: Some(SourceFormat::WebVtt),
@@ -966,26 +990,77 @@ fn push_setting(buf: &mut String, item: &str) {
 }
 
 /// Parse `HH:MM:SS.mmm` or `MM:SS.mmm` into microseconds.
+/// Parse a WebVTT §3.3 timestamp.
+///
+/// The §3.3 production has six strictly-ordered components:
+///
+/// 1. Optional (required if hours is non-zero): two or more ASCII digits
+///    representing hours, followed by `:`.
+/// 2. Exactly two ASCII digits representing minutes (0 ≤ minutes ≤ 59).
+/// 3. `:`.
+/// 4. Exactly two ASCII digits representing seconds (0 ≤ seconds ≤ 59).
+/// 5. `.`.
+/// 6. Exactly three ASCII digits for the milliseconds component.
+///
+/// The previous implementation accepted single-digit minutes / seconds
+/// and a missing or short fractional component. Real WebVTT files in the
+/// wild always emit the canonical 8-digit (`MM:SS.fff`) or 12-digit
+/// (`HH:MM:SS.fff`) form, and accepting shorter forms would let a
+/// malformed file silently parse into wrong cue offsets — for instance
+/// `1:5.0` would parse as 1 min 5.0 s instead of being rejected so the
+/// caller can apply its own fallback. Reject anything that deviates.
 fn parse_vtt_timestamp(s: &str) -> Option<i64> {
-    let (hms, ms) = match s.find('.') {
-        Some(i) => (&s[..i], &s[i + 1..]),
-        None => (s, "000"),
-    };
+    // §3.3 step 5 requires a U+002E FULL STOP separating the seconds and
+    // the milliseconds; reject if missing or if multiple are present.
+    let (hms, ms) = s.split_once('.')?;
+    if ms.contains('.') {
+        return None;
+    }
+    // §3.3 step 6: exactly three ASCII digits.
+    if ms.len() != 3 || !ms.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let ms_val: u32 = ms.parse().ok()?;
+
     let parts: Vec<&str> = hms.split(':').collect();
-    let (h, m, sec) = match parts.len() {
-        3 => (
-            parts[0].parse::<u32>().ok()?,
-            parts[1].parse::<u32>().ok()?,
-            parts[2].parse::<u32>().ok()?,
-        ),
-        2 => (
-            0u32,
-            parts[0].parse::<u32>().ok()?,
-            parts[1].parse::<u32>().ok()?,
-        ),
+    let (h_str, m_str, sec_str) = match parts.as_slice() {
+        [h, m, sec] => (Some(*h), *m, *sec),
+        [m, sec] => (None, *m, *sec),
         _ => return None,
     };
-    let ms_val: u32 = if ms.is_empty() { 0 } else { ms.parse().ok()? };
+
+    // §3.3 step 2: minutes are exactly two ASCII digits.
+    if m_str.len() != 2 || !m_str.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let m: u32 = m_str.parse().ok()?;
+    // §3.3 step 2 also bounds the value at 59.
+    if m > 59 {
+        return None;
+    }
+
+    // §3.3 step 4: seconds are exactly two ASCII digits.
+    if sec_str.len() != 2 || !sec_str.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let sec: u32 = sec_str.parse().ok()?;
+    if sec > 59 {
+        return None;
+    }
+
+    // §3.3 step 1: hours, if present, are two or more ASCII digits. When
+    // the optional hours component is omitted the minutes component is
+    // also bounded by the §3.3 step 2 invariant above; nothing else to do.
+    let h: u32 = match h_str {
+        None => 0,
+        Some(h) => {
+            if h.len() < 2 || !h.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            h.parse().ok()?
+        }
+    };
+
     Some(
         (h as i64) * 3_600_000_000
             + (m as i64) * 60_000_000
@@ -2210,5 +2285,139 @@ STYLE
         let second_timing_pos = out.find("00:00:03.000 -->").expect("second timing present");
         assert!(note_pos < second_id_pos);
         assert!(second_id_pos < second_timing_pos);
+    }
+
+    // §4.1 file-signature validation. The string `WEBVTT` must be followed
+    // by either a U+0020 SPACE, a U+0009 TAB, or a line terminator — never
+    // a letter. A missing separator means the file does not start with the
+    // valid signature and the parser must reject it.
+    #[test]
+    fn signature_with_no_separator_is_rejected() {
+        let src = "WEBVTTHEADER\n\n00:00:01.000 --> 00:00:02.000\nhi\n";
+        assert!(parse(src.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn signature_with_tab_separator_keeps_trailing_text() {
+        let src = "WEBVTT\tLanguage: en\n\n00:00:01.000 --> 00:00:02.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert!(t
+            .metadata
+            .iter()
+            .any(|(k, v)| k == "header" && v == "Language: en"));
+    }
+
+    #[test]
+    fn signature_with_space_separator_keeps_trailing_text() {
+        let src = "WEBVTT Subtitles in English\n\n00:00:01.000 --> 00:00:02.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert!(t
+            .metadata
+            .iter()
+            .any(|(k, v)| k == "header" && v == "Subtitles in English"));
+    }
+
+    #[test]
+    fn bare_signature_parses_with_no_trailing_metadata() {
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert!(!t.metadata.iter().any(|(k, _)| k == "header"));
+        assert_eq!(t.cues.len(), 1);
+    }
+
+    #[test]
+    fn signature_with_utf8_bom_is_accepted() {
+        // The shared encoding helper strips the UTF-8 BOM (EF BB BF) so the
+        // parser sees the bare signature; this is the §4.1 step 1 case.
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhi\n");
+        let t = parse(&bytes).unwrap();
+        assert_eq!(t.cues.len(), 1);
+    }
+
+    // §3.3 strict timestamp validation. Real WebVTT files always emit the
+    // canonical `MM:SS.fff` or `HH:MM:SS.fff` shape; previously the parser
+    // would accept `0:5.0` / `1:2:3` / `00:00:01` and silently turn them
+    // into wrong offsets. Reject anything that violates the spec.
+    #[test]
+    fn timestamp_with_single_digit_minutes_is_rejected() {
+        // Embedded inside a real cue so the rejection propagates as a cue
+        // skip rather than a parse error (the timing line failing to match
+        // becomes a cue block with no timing — the parser drops it).
+        let src = "WEBVTT\n\n0:00:01.000 --> 00:00:02.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 0);
+    }
+
+    #[test]
+    fn timestamp_with_single_digit_seconds_is_rejected() {
+        let src = "WEBVTT\n\n00:00:1.000 --> 00:00:02.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 0);
+    }
+
+    #[test]
+    fn timestamp_with_missing_fraction_is_rejected() {
+        let src = "WEBVTT\n\n00:00:01 --> 00:00:02\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 0);
+    }
+
+    #[test]
+    fn timestamp_with_two_digit_fraction_is_rejected() {
+        let src = "WEBVTT\n\n00:00:01.00 --> 00:00:02.00\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 0);
+    }
+
+    #[test]
+    fn timestamp_with_four_digit_fraction_is_rejected() {
+        let src = "WEBVTT\n\n00:00:01.0000 --> 00:00:02.0000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 0);
+    }
+
+    #[test]
+    fn timestamp_with_out_of_range_minutes_is_rejected() {
+        // §3.3 step 2: minutes must be in 0..=59.
+        let src = "WEBVTT\n\n00:60:01.000 --> 00:60:02.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 0);
+    }
+
+    #[test]
+    fn timestamp_with_out_of_range_seconds_is_rejected() {
+        // §3.3 step 4: seconds must be in 0..=59.
+        let src = "WEBVTT\n\n00:00:60.000 --> 00:00:61.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 0);
+    }
+
+    #[test]
+    fn timestamp_with_one_digit_hours_is_rejected() {
+        // §3.3 step 1: when hours is present it must be at least two digits.
+        let src = "WEBVTT\n\n1:00:01.000 --> 1:00:02.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 0);
+    }
+
+    #[test]
+    fn timestamp_three_digit_hours_is_accepted() {
+        // §3.3 step 1 says "two or more" digits, so HHH:MM:SS.fff is valid.
+        let src = "WEBVTT\n\n100:00:01.000 --> 100:00:02.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        assert_eq!(t.cues[0].start_us, 100 * 3_600_000_000 + 1_000_000);
+        assert_eq!(t.cues[0].end_us, 100 * 3_600_000_000 + 2_000_000);
+    }
+
+    #[test]
+    fn timestamp_mm_ss_fff_short_form_is_accepted() {
+        // §3.3 step 1 makes hours optional; MM:SS.fff is the valid short form.
+        let src = "WEBVTT\n\n01:00.000 --> 02:00.000\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        assert_eq!(t.cues[0].start_us, 60_000_000);
+        assert_eq!(t.cues[0].end_us, 120_000_000);
     }
 }

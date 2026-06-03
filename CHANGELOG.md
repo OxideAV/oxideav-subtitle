@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- WebVTT §4.1 file-signature validation now enforces the spec's literal
+  shape: the `WEBVTT` byte string must be followed by either a line
+  terminator or a single U+0020 SPACE / U+0009 TAB and then the
+  optional header trailing text. The previous lenient implementation
+  used a bare `starts_with("WEBVTT")` check, so a file beginning with
+  `WEBVTTHEADER` was accepted and the `HEADER` suffix silently became
+  trailing-text metadata; the strict check rejects that input with the
+  same missing-signature error a non-WEBVTT file produces. The two
+  valid separators (SPACE and TAB) round-trip alongside the empty
+  separator unchanged. A UTF-8 BOM on the file's first byte continues
+  to work because the shared `encoding::decode_subtitle_text` helper
+  strips it before the signature check.
+- WebVTT §3.3 timestamp parsing tightened to only accept the two
+  canonical shapes the spec defines: `MM:SS.fff` and `HH:MM:SS.fff`.
+  Minutes and seconds must be exactly two ASCII digits each in the
+  range `0..=59`; the fractional component must be exactly three ASCII
+  digits separated from the seconds by a `.`; the optional hours
+  component, when present, must be two or more ASCII digits. The
+  previous parser accepted single-digit minutes / seconds, an empty
+  fractional component (with `.000` as a silent default), and
+  out-of-range minutes / seconds, so a malformed timing line such as
+  `0:00:01.000 --> 00:00:02.000` (single-digit hours) or
+  `00:60:01.000 --> 00:60:02.000` (minutes > 59) would silently parse
+  into a wrong offset. The strict parser rejects those cases; the
+  containing cue block fails to recognise a timing line and the cue
+  is dropped instead of carrying a quietly-wrong timestamp. Covered by
+  14 new `webvtt::tests::{signature_with_no_separator_is_rejected,
+  signature_with_tab_separator_keeps_trailing_text,
+  signature_with_space_separator_keeps_trailing_text,
+  bare_signature_parses_with_no_trailing_metadata,
+  signature_with_utf8_bom_is_accepted,
+  timestamp_with_single_digit_minutes_is_rejected,
+  timestamp_with_single_digit_seconds_is_rejected,
+  timestamp_with_missing_fraction_is_rejected,
+  timestamp_with_two_digit_fraction_is_rejected,
+  timestamp_with_four_digit_fraction_is_rejected,
+  timestamp_with_out_of_range_minutes_is_rejected,
+  timestamp_with_out_of_range_seconds_is_rejected,
+  timestamp_with_one_digit_hours_is_rejected,
+  timestamp_three_digit_hours_is_accepted,
+  timestamp_mm_ss_fff_short_form_is_accepted}` unit tests plus
+  `tests/webvtt_parse.rs::strict_signature_and_timestamp_validation_end_to_end`
+  integration test.
+
 ### Added
 
 - WebVTT §3.4 cue-identifier round-trip. The parser now captures every
