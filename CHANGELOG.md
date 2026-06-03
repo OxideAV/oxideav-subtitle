@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- WebVTT §4.1 comment-block (`NOTE …`) round-trip. The parser now
+  captures every comment block — single-line, multi-line, or the
+  bare-token form (`NOTE` followed by a newline) — into per-block
+  `vtt_note.<idx>` track metadata holding the verbatim body and a
+  paired `vtt_note_pos.<idx>` recording the cue index the block
+  preceded (so `0` means "before the first cue", `N` means "after the
+  last cue", `k` means "between cue `k-1` and `k`"). Both write paths
+  honour the capture: the verbatim-extradata path re-emits the block
+  in its original byte position because it is now included in the
+  saved extradata; the synthesised (no-extradata) write path
+  reconstructs the same interleaving from the metadata, so a parse →
+  drop-extradata → write → parse cycle round-trips every NOTE in its
+  original position. Comment-block detection is case-sensitive per
+  spec — only first-line tokens of `NOTE`, `NOTE ` (space) or
+  `NOTE\t` (tab) qualify; lowercase `note` or longer identifiers like
+  `Notebook` fall through to the cue-block code path (previous
+  behaviour silently swallowed `notebook` as a comment, which was a
+  latent bug). The W3C §1.5 worked example with three NOTE blocks
+  (heading, mid-stream `check next cue`, trailing `end of file`)
+  round-trips byte-stable through both writer paths.
+
 ### Changed
 
 - `src/srt.rs`: trimmed a decorative comparison clause from the

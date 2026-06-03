@@ -55,14 +55,36 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
     extradata.push_str(header);
     extradata.push('\n');
 
+    let mut note_idx = 0usize;
     for block in &blocks {
         if block.is_empty() {
             continue;
         }
         let first = block[0].trim();
         let first_lc = first.to_ascii_lowercase();
-        if first_lc.starts_with("note") {
-            // NOTE block — skip.
+        // §4.1 WebVTT comment block: a block whose first line starts with
+        // the case-sensitive token `NOTE` followed by a space, tab, or end
+        // of line. Per the spec the parser ignores its content but a
+        // parse → write round-trip should preserve it; capture the body
+        // verbatim into `vtt_note.<idx>` and remember which cue it
+        // preceded via `vtt_note_pos.<idx>` so the synthesised writer can
+        // re-interleave it. NOTE is case-sensitive per spec, so accept
+        // exactly `NOTE` here (not the lowercased variant).
+        if first == "NOTE" || first.starts_with("NOTE ") || first.starts_with("NOTE\t") {
+            let body = block.join("\n");
+            track.metadata.push((format!("vtt_note.{note_idx}"), body));
+            track.metadata.push((
+                format!("vtt_note_pos.{note_idx}"),
+                track.cues.len().to_string(),
+            ));
+            note_idx += 1;
+            // Re-emit into extradata so the extradata round-trip preserves
+            // the block in its original position.
+            extradata.push('\n');
+            for line in block {
+                extradata.push_str(line);
+                extradata.push('\n');
+            }
             continue;
         }
         if first_lc == "style" {
@@ -216,7 +238,51 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
         }
     }
 
+    // Gather any captured NOTE comment blocks (§4.1) — these only have an
+    // effect when the writer is synthesising from scratch (no verbatim
+    // extradata), since the extradata path already carries the NOTEs in
+    // their original positions. Each entry pairs the captured body
+    // (`vtt_note.<idx>`) with the cue index it precedes
+    // (`vtt_note_pos.<idx>`). We bucket them by cue index so the writer
+    // can interleave them in order. Notes whose position equals
+    // `track.cues.len()` trail after the last cue.
+    let emit_notes = track.extradata.is_empty();
+    let mut notes_by_cue: Vec<Vec<&str>> = vec![Vec::new(); track.cues.len() + 1];
+    if emit_notes {
+        let mut idx = 0usize;
+        loop {
+            let body_key = format!("vtt_note.{idx}");
+            let pos_key = format!("vtt_note_pos.{idx}");
+            let body = track
+                .metadata
+                .iter()
+                .find(|(k, _)| *k == body_key)
+                .map(|(_, v)| v.as_str());
+            let Some(body) = body else { break };
+            let pos = track
+                .metadata
+                .iter()
+                .find(|(k, _)| *k == pos_key)
+                .and_then(|(_, v)| v.parse::<usize>().ok())
+                .unwrap_or(track.cues.len())
+                .min(track.cues.len());
+            notes_by_cue[pos].push(body);
+            idx += 1;
+        }
+    }
+
+    let emit_note_bucket = |out: &mut String, bucket: &[&str]| {
+        for body in bucket {
+            out.push('\n');
+            out.push_str(body);
+            out.push('\n');
+        }
+    };
+
     for (idx, cue) in track.cues.iter().enumerate() {
+        if emit_notes {
+            emit_note_bucket(&mut out, &notes_by_cue[idx]);
+        }
         let extras = track
             .metadata
             .iter()
@@ -227,6 +293,9 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
         out.push('\n');
         out.push_str(&render_segments(&cue.segments));
         out.push('\n');
+    }
+    if emit_notes {
+        emit_note_bucket(&mut out, &notes_by_cue[track.cues.len()]);
     }
 
     out.into_bytes()

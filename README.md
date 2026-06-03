@@ -184,6 +184,22 @@ extradata) the writer reconstructs a complete REGION block from the
 style + `vtt_region.<id>` metadata, so all five settings survive the
 synthesised write path too.
 
+## WebVTT NOTE comment blocks
+
+WebVTT §4.1 comment blocks (`NOTE …`) round-trip end-to-end. The parser
+captures each block verbatim into per-block `vtt_note.<idx>` track
+metadata together with a `vtt_note_pos.<idx>` recording the cue index
+the block preceded (`0` before the first cue, `N` after the last cue,
+`k` between cue `k-1` and `k`). The verbatim-extradata writer keeps each
+block in its original byte position because the captured block is also
+appended to the saved extradata; the synthesised (no-extradata) writer
+reconstructs the same interleaving from the metadata. Both single-line
+(`NOTE foo`), bare-token (`NOTE` alone on the line followed by body
+lines), and multi-line bodies survive. Comment-block detection is
+case-sensitive per spec — only first-line tokens of exactly `NOTE`,
+`NOTE ` (space), or `NOTE\t` (tab) qualify, so a cue id like `Notebook`
+no longer accidentally lights up the comment-block code path.
+
 ## TTML / IMSC 1.2
 
 The TTML parser handles core TTML v1, TTML v2, and the IMSC 1.2 profile.

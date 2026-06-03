@@ -334,6 +334,124 @@ warn
     );
 }
 
+#[test]
+fn note_comment_blocks_captured_and_round_trip() {
+    // WebVTT §4.1 comment blocks (`NOTE …`) are formally ignored by the
+    // parser but a faithful round-trip must preserve them — they carry
+    // author notes that should survive a parse → write cycle. We capture
+    // each block verbatim into `vtt_note.<idx>` metadata and remember
+    // which cue it preceded via `vtt_note_pos.<idx>`. The §1.5 example
+    // exercises the three placement positions: before any cue, between
+    // cues, and trailing after the last cue. A multi-line NOTE body must
+    // also survive intact.
+    let src = "WEBVTT\n\n\
+        NOTE\n\
+        This file was written by Jill. I hope\n\
+        you enjoy reading it.\n\n\
+        00:00:01.000 --> 00:00:04.000\n\
+        Never drink liquid nitrogen.\n\n\
+        NOTE check next cue\n\n\
+        00:00:05.000 --> 00:00:09.000\n\
+        — It will perforate your stomach.\n\
+        — You could die.\n\n\
+        NOTE end of file\n";
+    let t = webvtt::parse(src.as_bytes()).unwrap();
+    assert_eq!(t.cues.len(), 2);
+
+    // Three NOTE blocks captured with their positions.
+    let note_body = |i: usize| {
+        t.metadata
+            .iter()
+            .find(|(k, _)| k == &format!("vtt_note.{i}"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_else(|| panic!("missing vtt_note.{i}"))
+    };
+    let note_pos = |i: usize| {
+        t.metadata
+            .iter()
+            .find(|(k, _)| k == &format!("vtt_note_pos.{i}"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_else(|| panic!("missing vtt_note_pos.{i}"))
+    };
+    // First note: multi-line body, precedes cue 0.
+    assert_eq!(
+        note_body(0),
+        "NOTE\nThis file was written by Jill. I hope\nyou enjoy reading it."
+    );
+    assert_eq!(note_pos(0), "0");
+    // Second note: single-line body, precedes cue 1.
+    assert_eq!(note_body(1), "NOTE check next cue");
+    assert_eq!(note_pos(1), "1");
+    // Third note: trails the final cue.
+    assert_eq!(note_body(2), "NOTE end of file");
+    assert_eq!(note_pos(2), "2");
+
+    // The extradata path preserves NOTE bodies verbatim.
+    let out_extra = String::from_utf8(webvtt::write(&t)).unwrap();
+    assert!(out_extra.contains("NOTE\nThis file was written"));
+    assert!(out_extra.contains("NOTE check next cue"));
+    assert!(out_extra.contains("NOTE end of file"));
+
+    // The synth path rebuilds the same NOTE interleaving from metadata.
+    let mut t_synth = t.clone();
+    t_synth.extradata.clear();
+    let out_synth = String::from_utf8(webvtt::write(&t_synth)).unwrap();
+    assert!(out_synth.contains("NOTE\nThis file was written"));
+    assert!(out_synth.contains("NOTE check next cue"));
+    assert!(out_synth.contains("NOTE end of file"));
+    // Position-relative ordering preserved: the "check next cue" NOTE
+    // sits between the two cue timing lines, not after both.
+    let idx_first_cue = out_synth.find("00:00:01.000").unwrap();
+    let idx_mid_note = out_synth.find("NOTE check next cue").unwrap();
+    let idx_second_cue = out_synth.find("00:00:05.000").unwrap();
+    let idx_end_note = out_synth.find("NOTE end of file").unwrap();
+    assert!(idx_first_cue < idx_mid_note);
+    assert!(idx_mid_note < idx_second_cue);
+    assert!(idx_second_cue < idx_end_note);
+
+    // The synth output re-parses to the same NOTE metadata.
+    let t2 = webvtt::parse(out_synth.as_bytes()).unwrap();
+    assert_eq!(
+        t2.metadata
+            .iter()
+            .filter(|(k, _)| k.starts_with("vtt_note."))
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn note_block_with_arrow_in_body_does_not_swallow_following_cue() {
+    // §4.1 forbids the substring `-->` inside a NOTE body. We don't
+    // enforce that on input (we capture whatever the author wrote), but
+    // we must not let a leading `NOTE` swallow the following cue's
+    // timing line: each block was already split on blank lines at parse
+    // time, so a NOTE-prefixed block ends at the same blank line as
+    // anything else.
+    let src = "WEBVTT\n\n\
+        NOTE just a heads-up\n\n\
+        00:00:01.000 --> 00:00:02.000\n\
+        hello\n";
+    let t = webvtt::parse(src.as_bytes()).unwrap();
+    assert_eq!(t.cues.len(), 1);
+    assert_eq!(t.cues[0].start_us, 1_000_000);
+    assert!(t.metadata.iter().any(|(k, _)| k == "vtt_note.0"));
+}
+
+#[test]
+fn lowercased_note_prefix_is_not_a_comment_block() {
+    // §4.1 NOTE token is case-sensitive. A block whose first line begins
+    // with lowercase `note` (or e.g. `Notebook`) is not a comment block;
+    // it falls through to the cue-block code path where the absence of a
+    // timing line skips it harmlessly. Crucially, it must not be
+    // captured as `vtt_note.<idx>` metadata.
+    let src = "WEBVTT\n\n\
+        Notebook\n00:00:01.000 --> 00:00:02.000\nhi\n";
+    let t = webvtt::parse(src.as_bytes()).unwrap();
+    assert!(!t.metadata.iter().any(|(k, _)| k.starts_with("vtt_note.")));
+    assert_eq!(t.cues.len(), 1);
+}
+
 fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
     for s in segs {
         f(s);
