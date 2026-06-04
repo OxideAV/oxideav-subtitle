@@ -128,6 +128,15 @@ the numeric offset / size / align for downstream consumers either way.
 The single-cue packet codec path (`cue_to_bytes` / `bytes_to_cue`) has
 no track context, so these extras are a track-level write feature.
 
+Per the WebVTT §6.3 cue-settings algorithm, individual settings whose
+value isn't a valid WebVTT percentage (§4.4: digits, optional
+`.digits`, then `%`, numerically `0..=100`) are dropped while the cue
+itself still parses. That covers `position`, `size`, and the
+percentage variant of `line`; the `line` line-number variant accepts
+only the spec production `[-]?digits[.digits]?`. An unrecognised
+`,<align>` suffix on `position` or `line` drops the whole setting
+rather than silently keeping the numeric part.
+
 ## WebVTT cue payload inline markup
 
 The §3.5 cue components are parsed into the structured `Segment` tree and

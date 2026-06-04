@@ -654,7 +654,7 @@ fn parse_region_block(lines: &[&str]) -> Option<(ParsedRegion, String)> {
             match name {
                 "id" => id = value.to_string(),
                 "width" => {
-                    if let Some(p) = parse_region_percentage(value) {
+                    if let Some(p) = parse_webvtt_percentage(value) {
                         width = Some(p);
                     }
                 }
@@ -712,12 +712,31 @@ fn parse_region_block(lines: &[&str]) -> Option<(ParsedRegion, String)> {
     Some((ParsedRegion { id, style }, settings))
 }
 
-/// Parse a WebVTT percentage (`<digits>[.<digits>]%`, range 0..=100) per §6.2's
-/// "rules to parse a percentage string"; returns the numeric value (no `%`).
-fn parse_region_percentage(s: &str) -> Option<f32> {
+/// Parse a WebVTT percentage per §4.4 "WebVTT percentage" + §6.2's "parse a
+/// percentage string" algorithm: one or more ASCII digits, optionally followed
+/// by a U+002E DOT and one or more ASCII digits, then a U+0025 PERCENT SIGN,
+/// numerically in the range 0..=100. Returns the numeric value (no `%`).
+///
+/// Reused by region settings (`width`, `regionanchor`, `viewportanchor`) and
+/// by the §6.3 `position`, `size`, and percentage variant of the `line` cue
+/// setting. Anything that doesn't match the strict syntax (leading sign,
+/// exponent, multiple dots, trailing characters after `%`) is rejected so the
+/// caller can drop the malformed setting per spec.
+fn parse_webvtt_percentage(s: &str) -> Option<f32> {
     let body = s.strip_suffix('%')?;
     if body.is_empty() {
         return None;
+    }
+    // §4.4 syntax: digits, optionally `.digits`. No sign, no exponent.
+    let mut parts = body.splitn(2, '.');
+    let int_part = parts.next()?;
+    if int_part.is_empty() || !int_part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if let Some(frac_part) = parts.next() {
+        if frac_part.is_empty() || !frac_part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
     }
     let val: f32 = body.parse().ok()?;
     if (0.0..=100.0).contains(&val) {
@@ -727,11 +746,34 @@ fn parse_region_percentage(s: &str) -> Option<f32> {
     }
 }
 
+/// Parse a WebVTT line-cue-setting numeric value in its **line-number** variant
+/// per §6.3: an optional leading U+002D HYPHEN-MINUS, one or more ASCII digits,
+/// optionally followed by a single U+002E DOT and one or more ASCII digits. The
+/// trailing `%` percentage form is handled by `parse_webvtt_percentage` instead.
+fn parse_webvtt_line_number(s: &str) -> Option<f32> {
+    let (neg, body) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s),
+    };
+    let mut parts = body.splitn(2, '.');
+    let int_part = parts.next()?;
+    if int_part.is_empty() || !int_part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if let Some(frac_part) = parts.next() {
+        if frac_part.is_empty() || !frac_part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
+    let val: f32 = body.parse().ok()?;
+    Some(if neg { -val } else { val })
+}
+
 /// Parse a `<pct>,<pct>` anchor tuple; both components must be valid
 /// percentages (§6.2 regionanchor / viewportanchor).
 fn parse_anchor_tuple(v: &str) -> Option<(f32, f32)> {
     let (x, y) = v.split_once(',')?;
-    Some((parse_region_percentage(x)?, parse_region_percentage(y)?))
+    Some((parse_webvtt_percentage(x)?, parse_webvtt_percentage(y)?))
 }
 
 /// Format a percentage value back with its `%` suffix, dropping a trailing
@@ -858,46 +900,75 @@ fn parse_timing_full(line: &str) -> Option<ParsedTiming> {
         let k_lc = k.to_ascii_lowercase();
         match k_lc.as_str() {
             "line" => {
-                let cp = pos.get_or_insert_with(CuePosition::default);
-                // `line:<offset>[,<align>]` — `<offset>` is a percentage or a
-                // (possibly negative) line number; the IR holds the numeric
-                // offset in `y`, but loses whether a `%` was present and the
-                // alignment suffix, so both go to `extras`.
+                // §6.3 `line` cue setting. The offset is either a WebVTT
+                // percentage (last char `%`, range 0..=100) or a line-number
+                // (optional leading `-`, digits, optional one `.digits`). Any
+                // other shape → drop the whole setting per spec ("jump to the
+                // step labeled next setting"). An optional `,<align>` suffix
+                // gates on `start | center | end`; a non-empty suffix that's
+                // not one of those also drops the whole setting.
                 let (offset, suffix) = split_setting_suffix(v);
-                cp.y = parse_signed_number(offset);
-                if offset.contains('%') {
+                let is_pct = offset.ends_with('%');
+                let parsed = if is_pct {
+                    parse_webvtt_percentage(offset)
+                } else {
+                    parse_webvtt_line_number(offset)
+                };
+                let Some(num) = parsed else { continue };
+                let suffix_ok = match suffix {
+                    None => None,
+                    Some(s) => {
+                        let lc = s.to_ascii_lowercase();
+                        if matches!(lc.as_str(), "start" | "center" | "end") {
+                            Some(lc)
+                        } else {
+                            continue;
+                        }
+                    }
+                };
+                let cp = pos.get_or_insert_with(CuePosition::default);
+                cp.y = Some(num);
+                if is_pct {
                     line_is_pct = true;
                 }
-                if let Some(s) = suffix {
-                    if matches!(s.to_ascii_lowercase().as_str(), "start" | "center" | "end") {
-                        line_suffix = Some(s.to_ascii_lowercase());
-                    }
+                if let Some(s) = suffix_ok {
+                    line_suffix = Some(s);
                 }
             }
             "position" => {
-                let cp = pos.get_or_insert_with(CuePosition::default);
-                let (offset, suffix) = split_setting_suffix(v);
-                let num: String = offset
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit() || *c == '.')
-                    .collect();
-                cp.x = num.parse::<f32>().ok();
-                if let Some(s) = suffix {
-                    if matches!(
-                        s.to_ascii_lowercase().as_str(),
-                        "line-left" | "center" | "line-right"
-                    ) {
-                        position_suffix = Some(s.to_ascii_lowercase());
+                // §6.3 `position` cue setting. The colpos value must be a
+                // WebVTT percentage (digits[.digits]%, 0..=100). The optional
+                // `,<align>` suffix accepts only `line-left | center |
+                // line-right`; an unrecognised suffix drops the whole setting.
+                let (colpos, suffix) = split_setting_suffix(v);
+                let Some(num) = parse_webvtt_percentage(colpos) else {
+                    continue;
+                };
+                let suffix_ok = match suffix {
+                    None => None,
+                    Some(s) => {
+                        let lc = s.to_ascii_lowercase();
+                        if matches!(lc.as_str(), "line-left" | "center" | "line-right") {
+                            Some(lc)
+                        } else {
+                            continue;
+                        }
                     }
+                };
+                let cp = pos.get_or_insert_with(CuePosition::default);
+                cp.x = Some(num);
+                if let Some(s) = suffix_ok {
+                    position_suffix = Some(s);
                 }
             }
             "size" => {
+                // §6.3 `size` cue setting. The whole value must be a WebVTT
+                // percentage; malformed values drop the setting.
+                let Some(num) = parse_webvtt_percentage(v) else {
+                    continue;
+                };
                 let cp = pos.get_or_insert_with(CuePosition::default);
-                let num: String = v
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit() || *c == '.')
-                    .collect();
-                cp.size = num.parse::<f32>().ok();
+                cp.size = Some(num);
             }
             "align" => {
                 let cp = pos.get_or_insert_with(CuePosition::default);
@@ -968,18 +1039,6 @@ fn split_setting_suffix(v: &str) -> (&str, Option<&str>) {
         Some((head, tail)) => (head, Some(tail)),
         None => (v, None),
     }
-}
-
-/// Parse a `line` offset: a percentage or a (possibly negative) line number.
-fn parse_signed_number(s: &str) -> Option<f32> {
-    let neg = s.starts_with('-');
-    let body = s.strip_prefix('-').unwrap_or(s);
-    let num: String = body
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.')
-        .collect();
-    let val = num.parse::<f32>().ok()?;
-    Some(if neg { -val } else { val })
 }
 
 fn push_setting(buf: &mut String, item: &str) {
@@ -1603,6 +1662,77 @@ mod tests {
         let t = parse(src.as_bytes()).unwrap();
         let out = String::from_utf8(write(&t)).unwrap();
         assert!(out.contains("line:90%"), "round-trip: {out}");
+    }
+
+    #[test]
+    fn drops_malformed_position_size_and_line_settings() {
+        // §6.3 mandates "jump to the step labeled next setting" — i.e. drop
+        // the individual setting — whenever a `position` / `size` value is not
+        // a valid WebVTT percentage (§4.4: digits, optional `.digits`, then
+        // `%`, range 0..=100). The cue itself still parses; the malformed
+        // settings simply leave no positioning behind. Same for `line` when
+        // neither the percentage nor the line-number production matches.
+        //
+        // Four malformed values exercised together:
+        //   * `position:50`   — missing trailing `%`
+        //   * `size:120%`     — out of range
+        //   * `line:200%`     — percentage out of range
+        //   * `line:1.5.0`    — line-number with two dots
+        let src = "WEBVTT\n\n\
+            00:00:01.000 --> 00:00:02.000 position:50 size:120% line:200% align:center\n\
+            no-position\n\n\
+            00:00:03.000 --> 00:00:04.000 line:1.5.0 align:start\n\
+            no-line\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 2, "both cues still parse");
+
+        // Cue 1: position + size + line dropped; align remains (and is the
+        // only thing that materialises a CuePosition).
+        let cue1 = &t.cues[0];
+        let p1 = cue1.positioning.as_ref().expect("align surfaces position");
+        assert_eq!(p1.x, None, "malformed position:50 dropped");
+        assert_eq!(p1.y, None, "malformed line:200% dropped");
+        assert_eq!(p1.size, None, "malformed size:120% dropped");
+        assert!(matches!(p1.align, TextAlign::Center));
+
+        // Cue 2: malformed `line:1.5.0` dropped, leaving only the align.
+        let cue2 = &t.cues[1];
+        let p2 = cue2.positioning.as_ref().expect("align surfaces position");
+        assert_eq!(p2.y, None, "malformed line:1.5.0 dropped");
+        assert!(matches!(p2.align, TextAlign::Start));
+
+        // Round-trip: the writer must NOT re-emit the dropped settings.
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(
+            !out.contains("position:50") && !out.contains("position:50%"),
+            "writer leaked dropped position: {out}"
+        );
+        assert!(
+            !out.contains("size:120%"),
+            "writer leaked out-of-range size: {out}"
+        );
+        assert!(
+            !out.contains("line:200%") && !out.contains("line:1.5"),
+            "writer leaked malformed line: {out}"
+        );
+    }
+
+    #[test]
+    fn drops_position_with_invalid_align_suffix() {
+        // §6.3 `position` step: an unrecognised `colalign` value sends the
+        // parser to "next setting" — the entire `position:` setting is
+        // discarded, not just the suffix. Verify with `position:30%,middle`
+        // (`middle` is not one of `line-left | center | line-right`).
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000 position:30%,middle align:end\nhi\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let p = t.cues[0].positioning.as_ref().unwrap();
+        assert_eq!(p.x, None, "position dropped due to bad suffix");
+        assert!(matches!(p.align, TextAlign::End));
+        let out = String::from_utf8(write(&t)).unwrap();
+        assert!(
+            !out.contains("position:30%"),
+            "writer leaked dropped position: {out}"
+        );
     }
 
     #[test]

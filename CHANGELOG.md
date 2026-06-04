@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- WebVTT §6.3 `position` / `size` / `line` cue-setting parsing now drops
+  individual settings whose value is not a valid WebVTT percentage
+  (§4.4: one or more ASCII digits, optionally followed by a U+002E DOT
+  and one or more ASCII digits, then a U+0025 PERCENT SIGN, numerically
+  in `0..=100`) — matching the spec's "jump to the step labeled next
+  setting" branch for malformed values. Previously the parser kept the
+  leading digit prefix of a bare `position:50` and accepted
+  out-of-range values like `size:120%`; both are now discarded while
+  the cue itself still parses. The `line` setting's line-number
+  variant likewise rejects values that don't match the spec
+  production `[-]?digits[.digits]?`, and the `,<align>` suffix of
+  `line` and `position` drops the whole setting when the suffix isn't
+  one of the spec's recognised keywords. The existing percentage and
+  negative-line-number round-trips are unchanged.
 - WebVTT §4.1 file-signature validation now enforces the spec's literal
   shape: the `WEBVTT` byte string must be followed by either a line
   terminator or a single U+0020 SPACE / U+0009 TAB and then the
