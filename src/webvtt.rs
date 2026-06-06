@@ -1368,6 +1368,22 @@ impl<'a> VttParser<'a> {
                         out.push(Segment::Raw(format!("<{}>", tag)));
                     }
                 }
+            } else if byte == b'&' {
+                // WebVTT §6.4 cue-text tokenizer: U+0026 AMPERSAND in the
+                // data state transitions to "HTML character reference in
+                // data state" which attempts to consume a character
+                // reference. If the consume succeeds, the decoded
+                // codepoint(s) are appended to `result`; otherwise the
+                // literal `&` is appended and tokenisation resumes at the
+                // next byte.
+                let rest = &self.src[self.pos..];
+                if let Some((decoded, len)) = decode_html_char_ref(rest) {
+                    text_buf.push_str(&decoded);
+                    self.pos += len;
+                } else {
+                    text_buf.push('&');
+                    self.pos += 1;
+                }
             } else {
                 // Advance one full UTF-8 codepoint (the input is &str so
                 // the byte sequence at `self.pos` is a valid char boundary).
@@ -1387,6 +1403,108 @@ impl<'a> VttParser<'a> {
     }
 }
 
+/// WebVTT §6.4 ("HTML character reference in data state") decodes an HTML
+/// character reference starting at `&` (the first byte of `s`).
+///
+/// Three reference shapes are recognised, all terminated by U+003B SEMICOLON
+/// per the WebVTT §4.2.2 cue-text-span production (`&` is one of the four
+/// reserved bytes that triggers tokenizer reentry, so an unterminated
+/// reference falls through to a literal `&`):
+///
+/// * Decimal: `&#NN…;` — one or more ASCII digits.
+/// * Hex: `&#xNN…;` / `&#XNN…;` — one or more ASCII hex digits.
+/// * Named: one of the six WebVTT-spec-listed names plus the two most-cited
+///   HTML5.1 names that subtitle text encodes in practice. The WebVTT spec
+///   names `&lrm;` (§4.2.5 example) and `&#xNNNN;` (§4.2.5 example) explicitly;
+///   `&amp;`, `&lt;`, `&gt;` are required for round-tripping the three reserved
+///   tokenizer-trigger bytes. `&nbsp;`, `&rlm;` round out the writing-direction
+///   set. `&quot;` and `&apos;` round out the ASCII-punctuation set commonly
+///   produced by upstream XML / HTML tools that hand-author cue text.
+///
+/// Returns the decoded UTF-8 substring and the byte length consumed from
+/// `s` (including the leading `&` and the trailing `;`). Returns `None` on
+/// any malformed shape so the caller emits a literal `&` and advances by
+/// one byte (matching the spec's "if nothing is returned, append a U+0026
+/// AMPERSAND character" branch).
+fn decode_html_char_ref(s: &str) -> Option<(String, usize)> {
+    debug_assert!(s.starts_with('&'));
+    let bytes = s.as_bytes();
+    if bytes.len() < 3 {
+        return None;
+    }
+    // Numeric / hex reference.
+    if bytes[1] == b'#' {
+        let (radix, digit_start) = if bytes.len() > 2 && (bytes[2] == b'x' || bytes[2] == b'X') {
+            (16u32, 3usize)
+        } else {
+            (10u32, 2usize)
+        };
+        let mut i = digit_start;
+        while i < bytes.len() && is_digit_for_radix(bytes[i], radix) {
+            i += 1;
+        }
+        if i == digit_start || i >= bytes.len() || bytes[i] != b';' {
+            return None;
+        }
+        let digits = &s[digit_start..i];
+        let cp = u32::from_str_radix(digits, radix).ok()?;
+        // Per HTML5.1 the U+0000 codepoint and surrogate range map to
+        // U+FFFD. Out-of-range codepoints (> U+10FFFF) also map to U+FFFD.
+        let ch = match cp {
+            0 => '\u{FFFD}',
+            0xD800..=0xDFFF => '\u{FFFD}',
+            c if c > 0x10FFFF => '\u{FFFD}',
+            c => char::from_u32(c).unwrap_or('\u{FFFD}'),
+        };
+        return Some((ch.to_string(), i + 1));
+    }
+    // Named reference. Each entry's length includes the leading `&` and
+    // trailing `;`; longest names first so a prefix match against a
+    // truncated name doesn't accidentally win.
+    const NAMES: &[(&str, char)] = &[
+        ("&nbsp;", '\u{00A0}'),
+        ("&apos;", '\''),
+        ("&quot;", '"'),
+        ("&amp;", '&'),
+        ("&lrm;", '\u{200E}'),
+        ("&rlm;", '\u{200F}'),
+        ("&lt;", '<'),
+        ("&gt;", '>'),
+    ];
+    for (name, ch) in NAMES {
+        if s.starts_with(name) {
+            return Some((ch.to_string(), name.len()));
+        }
+    }
+    None
+}
+
+#[inline]
+fn is_digit_for_radix(b: u8, radix: u32) -> bool {
+    match radix {
+        10 => b.is_ascii_digit(),
+        16 => b.is_ascii_hexdigit(),
+        _ => false,
+    }
+}
+
+/// Encode the three WebVTT §4.2.2 reserved bytes (`&`, `<`, `>`) as their
+/// HTML named character references so a tokenizer-clean round-trip is
+/// possible. Other bytes pass through verbatim — the cue text span
+/// production places no other escape requirement.
+fn encode_text_for_cue(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn render_segments(segments: &[Segment]) -> String {
     let mut out = String::new();
     append_segments(segments, &mut out);
@@ -1396,7 +1514,7 @@ fn render_segments(segments: &[Segment]) -> String {
 fn append_segments(segments: &[Segment], out: &mut String) {
     for seg in segments {
         match seg {
-            Segment::Text(s) => out.push_str(s),
+            Segment::Text(s) => out.push_str(&encode_text_for_cue(s)),
             Segment::LineBreak => out.push('\n'),
             Segment::Bold(c) => {
                 out.push_str("<b>");
@@ -2549,5 +2667,125 @@ STYLE
         assert_eq!(t.cues.len(), 1);
         assert_eq!(t.cues[0].start_us, 60_000_000);
         assert_eq!(t.cues[0].end_us, 120_000_000);
+    }
+
+    // -------------------------------------------------------------------
+    // §6.4 HTML character reference decoding + §4.2.2 text-byte escaping
+    // -------------------------------------------------------------------
+
+    fn cue_text(cue: &SubtitleCue) -> String {
+        let mut out = String::new();
+        gather_text(&cue.segments, &mut out);
+        out
+    }
+
+    fn gather_text(segs: &[Segment], out: &mut String) {
+        for seg in segs {
+            match seg {
+                Segment::Text(s) => out.push_str(s),
+                Segment::Bold(c)
+                | Segment::Italic(c)
+                | Segment::Underline(c)
+                | Segment::Strike(c) => gather_text(c, out),
+                Segment::Voice { children, .. }
+                | Segment::Class { children, .. }
+                | Segment::Color { children, .. }
+                | Segment::Font { children, .. }
+                | Segment::Karaoke { children, .. } => gather_text(children, out),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn decodes_named_amp_lt_gt() {
+        // §6.4 data state: U+0026 AMPERSAND switches to the HTML char ref
+        // state; `&amp;`, `&lt;`, `&gt;` decode to their target codepoints.
+        let src =
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nTom &amp; Jerry &lt;3 hearts &gt; rocks\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        assert_eq!(cue_text(&t.cues[0]), "Tom & Jerry <3 hearts > rocks");
+    }
+
+    #[test]
+    fn decodes_named_nbsp_lrm_rlm_quot_apos() {
+        // §4.2.5 example explicitly cites `&lrm;` as the U+200E escape;
+        // `&nbsp;` / `&rlm;` / `&quot;` / `&apos;` are the other HTML5.1
+        // named refs subtitle authoring tools emit.
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nA&nbsp;B &lrm;C&rlm;D &quot;e&apos;f\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        assert_eq!(cue_text(&t.cues[0]), "A\u{00A0}B \u{200E}C\u{200F}D \"e'f");
+    }
+
+    #[test]
+    fn decodes_decimal_and_hex_numeric_refs() {
+        // §4.2.5 example explicitly cites `&#x2068;` / `&#x2069;` as
+        // hex-numeric escapes. Decimal `&#65;` is the parallel shape.
+        let src =
+            "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n&#65; &#x42; &#X43; &#x2068;LTR&#x2069;\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        assert_eq!(cue_text(&t.cues[0]), "A B C \u{2068}LTR\u{2069}");
+    }
+
+    #[test]
+    fn decoded_zero_and_surrogate_codepoints_become_replacement() {
+        // Per HTML5.1: U+0000 and surrogate-range codepoints map to U+FFFD.
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n&#0;&#xD800;&#xDFFF;\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        assert_eq!(cue_text(&t.cues[0]), "\u{FFFD}\u{FFFD}\u{FFFD}");
+    }
+
+    #[test]
+    fn malformed_char_ref_falls_back_to_literal_ampersand() {
+        // §6.4 "If nothing is returned, append a U+0026 AMPERSAND character"
+        // — an unterminated / unknown ref leaves the `&` as text and the
+        // tokenizer resumes at the next byte (so `& Co.` round-trips and an
+        // unknown name like `&bogus;` is not silently dropped).
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n& Co. and &bogus; here\n";
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        assert_eq!(cue_text(&t.cues[0]), "& Co. and &bogus; here");
+    }
+
+    #[test]
+    fn writer_escapes_reserved_text_bytes() {
+        // §4.2.2: a WebVTT cue text span consists of characters other than
+        // LF, CR, `&`, `<`. A `Segment::Text` carrying any of `&`, `<`, `>`
+        // must serialise as the named char ref so the result re-parses
+        // tokenizer-clean.
+        let cue = SubtitleCue {
+            start_us: 0,
+            end_us: 1_000_000,
+            style_ref: None,
+            positioning: None,
+            segments: vec![Segment::Text("Tom & Jerry <3 hearts > rocks".into())],
+        };
+        let bytes = cue_to_bytes(&cue);
+        let s = String::from_utf8(bytes).unwrap();
+        assert!(s.contains("Tom &amp; Jerry &lt;3 hearts &gt; rocks"));
+    }
+
+    #[test]
+    fn text_round_trip_through_parse_write_parse_is_byte_stable() {
+        let original = "Tom & Jerry <i>are</i> friends &amp; foes";
+        let src = format!("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{original}\n");
+        let t1 = parse(src.as_bytes()).unwrap();
+        let written = write(&t1);
+        let t2 = parse(&written).unwrap();
+        // Both parses must produce the same rendered segment string (the
+        // post-decode text + the italic wrapper survive both round-trips).
+        assert_eq!(t1.cues.len(), 1);
+        assert_eq!(t2.cues.len(), 1);
+        let rendered1 = render_segments(&t1.cues[0].segments);
+        let rendered2 = render_segments(&t2.cues[0].segments);
+        assert_eq!(rendered1, rendered2);
+        // And the user-visible text reads as the author wrote it after
+        // resolving the entity in their source.
+        assert_eq!(cue_text(&t1.cues[0]), "Tom & Jerry are friends & foes");
+        assert_eq!(cue_text(&t2.cues[0]), "Tom & Jerry are friends & foes");
     }
 }

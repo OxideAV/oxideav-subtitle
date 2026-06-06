@@ -165,6 +165,36 @@ change: previously a multi-byte codepoint (`à`, `漢`, etc.) in cue text
 adjacent to a tag boundary was sliced byte-by-byte and re-emitted as
 mojibake; the accumulator now advances by full codepoints.
 
+## WebVTT cue-text character references
+
+The WebVTT §6.4 cue-text tokenizer transitions to the "HTML character
+reference in data state" on `&` in the cue body. The parser now decodes
+those references in the three shapes the spec admits:
+
+* Decimal — `&#NNNN;` (one or more ASCII digits, semicolon-terminated).
+* Hex — `&#xNNNN;` / `&#XNNNN;` (one or more ASCII hex digits).
+* Named — the eight HTML5.1 names subtitle authoring tools emit in
+  practice: `&amp;`, `&lt;`, `&gt;`, `&nbsp;`, `&lrm;`, `&rlm;`,
+  `&quot;`, `&apos;`. The §4.2.5 examples that the WebVTT spec itself
+  cites by name (`&lrm;` for U+200E, the `&#x2068;` / `&#x2069;` bidi
+  isolate pair) decode to their target codepoints rather than
+  passing through as literal byte sequences.
+
+Per HTML5.1, numeric references that name U+0000 or a surrogate-range
+codepoint (U+D800 .. U+DFFF) map to U+FFFD REPLACEMENT CHARACTER, as do
+out-of-range scalars above U+10FFFF. A malformed reference — no
+terminating `;`, an unknown name, missing digits — falls back to the
+literal `&` byte per the §6.4 "If nothing is returned, append a U+0026
+AMPERSAND character" branch, so a stray `& Co.` in cue text no longer
+parses as the start of an entity.
+
+The reciprocal writer side encodes any `&`, `<`, or `>` that appears
+inside a `Segment::Text` as `&amp;` / `&lt;` / `&gt;`. The three bytes
+are the §4.2.2 reserved tokens that re-enter the tokenizer, so a parse
+→ write → parse round-trip on text containing them reproduces the
+original user-visible string (`Tom & Jerry <3 hearts > rocks` survives
+through `&amp;` / `&lt;` / `&gt;` on the wire).
+
 ## WebVTT STYLE blocks
 
 The WebVTT `STYLE` block (`::cue(...) { … }`) parses both the selector and

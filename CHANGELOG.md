@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- WebVTT §6.4 cue-text tokenizer now decodes HTML character references
+  in the data state (the spec's "U+0026 AMPERSAND → HTML character
+  reference in data state" transition). The decoder recognises the
+  three reference shapes the spec admits — decimal `&#NN…;`, hex
+  `&#xNN…;` / `&#XNN…;`, and named — with the named-reference table
+  covering the eight HTML5.1 names that subtitle authoring tools emit
+  in practice: `&amp;`, `&lt;`, `&gt;`, `&nbsp;`, `&lrm;`, `&rlm;`,
+  `&quot;`, `&apos;`. The §4.2.5 examples that the WebVTT spec itself
+  cites — `&lrm;` (U+200E LEFT-TO-RIGHT MARK) and the bidi-isolate pair
+  `&#x2068;` / `&#x2069;` — now decode to their target codepoints
+  rather than passing through as literal byte sequences. Per HTML5.1,
+  numeric references that name U+0000 or a surrogate-range codepoint
+  map to U+FFFD REPLACEMENT CHARACTER. Malformed references (no
+  terminating `;`, unknown name, missing digits) fall back to the
+  literal `&` byte per the §6.4 "If nothing is returned, append a
+  U+0026 AMPERSAND character" branch, so a stray `& Co.` in cue text
+  no longer parses as the start of an entity. The reciprocal writer
+  side encodes any `&`, `<`, or `>` byte that appears inside a
+  `Segment::Text` as `&amp;` / `&lt;` / `&gt;`, so a parse → write →
+  parse round-trip on text that contains the three §4.2.2-reserved
+  bytes (`Tom & Jerry <3 hearts > rocks`) reproduces the original
+  user-visible string.
 - TTML2 §8.1.5 inline `tts:*` styling attributes on `<p>` content
   elements are now honoured. The IR-modelled attrs
   (`tts:color`, `tts:fontFamily`, `tts:fontSize`, `tts:fontWeight`,
