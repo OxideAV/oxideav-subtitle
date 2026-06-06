@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- TTML2 §8.1.5 inline `tts:*` styling attributes on `<p>` content
+  elements are now honoured. The IR-modelled attrs
+  (`tts:color`, `tts:fontFamily`, `tts:fontSize`, `tts:fontWeight`,
+  `tts:fontStyle`, `tts:textDecoration`) on `<p>` wrap the cue's
+  content with the equivalent `Segment::Bold` / `Italic` / `Underline`
+  / `Strike` / `Color` / `Font` segments, mirroring the spec's
+  position that inline styling on `<p>` is "available for style
+  inheritance by descendant content elements". The IR-unmodelled
+  inline attrs (`tts:textAlign`, `tts:displayAlign`, `tts:lineHeight`,
+  `tts:opacity`, `tts:textOutline`, `tts:textShadow`,
+  `tts:writingMode`, `tts:wrapOption`, `tts:direction`,
+  `tts:rubyAlign`, `tts:shear`, `tts:showBackground`,
+  `tts:visibility`, `tts:display`, `tts:disparity`,
+  `tts:fontSelectionStrategy`, `tts:position`, `itts:forcedDisplay`,
+  `itts:fillLineGap`) survive the round-trip via per-cue
+  `ttml_p_extra.<idx>` track metadata in canonical spec order, so a
+  parse → write → parse cycle is byte-stable on the inline-styled
+  `<p>`. The synthesised writer also widens the `xmlns:itts`
+  emission test to cover `ttml_p_extra` so an inline
+  `itts:forcedDisplay` on a `<p>` re-emits with a valid namespace
+  binding. Previously every inline `tts:*` attribute on `<p>` was
+  silently dropped — only the `style="ref"` attribute and `<span>`
+  inline styling were honoured.
 - WebVTT §6.3 `position` / `size` / `line` cue-setting parsing now drops
   individual settings whose value is not a valid WebVTT percentage
   (§4.4: one or more ASCII digits, optionally followed by a U+002E DOT

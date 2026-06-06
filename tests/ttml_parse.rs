@@ -214,6 +214,141 @@ fn full_imsc1_document_parses_and_round_trips() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// TTML2 §8.1.5 — inline `tts:*` styling attributes on `<p>` content
+// elements. Modelled attrs wrap the cue's content with the equivalent
+// IR segment; IR-unmodelled attrs ride the `ttml_p_extra.<idx>`
+// track-metadata channel and round-trip on the `<p>`.
+
+#[test]
+fn inline_p_styling_modelled_attrs_wrap_segments() {
+    // tts:fontWeight + tts:color directly on <p>, no <span>.
+    let src = "<?xml version=\"1.0\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <body><div>\n\
+    <p begin=\"0s\" end=\"1s\" tts:fontWeight=\"bold\" tts:color=\"#00FF00\">hello</p>\n\
+  </div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    assert_eq!(t.cues.len(), 1);
+    // The cue's segments should be wrapped Bold > Color > "hello"
+    // (or Color > Bold > "hello"; we only verify both shapes are seen).
+    let mut saw_bold = false;
+    let mut saw_color = false;
+    visit(&t.cues[0].segments, &mut |s| match s {
+        Segment::Bold(_) => saw_bold = true,
+        Segment::Color { rgb, .. } if *rgb == (0, 255, 0) => saw_color = true,
+        _ => {}
+    });
+    assert!(saw_bold, "inline tts:fontWeight=\"bold\" must wrap content");
+    assert!(saw_color, "inline tts:color must wrap content");
+}
+
+#[test]
+fn inline_p_styling_unmodelled_attrs_ride_extras() {
+    // tts:textAlign + tts:lineHeight + tts:opacity on <p>. Of these
+    // `textAlign` has an IR home on SubtitleStyle but not on a per-cue
+    // basis — at the cue level it has no Segment mapping, so it (and the
+    // other two IR-unmodelled attrs) ride the per-cue extras channel.
+    let src = "<?xml version=\"1.0\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <body><div>\n\
+    <p begin=\"0s\" end=\"1s\" tts:textAlign=\"center\" tts:lineHeight=\"125%\" tts:opacity=\"0.8\">x</p>\n\
+  </div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    let extras = t
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "ttml_p_extra.0")
+        .map(|(_, v)| v.as_str())
+        .expect("inline IR-unmodelled tts:* attrs on <p> ride ttml_p_extra.0");
+    // Canonical order: textAlign before lineHeight before opacity.
+    let i_ta = extras.find("tts:textAlign").unwrap();
+    let i_lh = extras.find("tts:lineHeight").unwrap();
+    let i_op = extras.find("tts:opacity").unwrap();
+    assert!(i_ta < i_lh && i_lh < i_op, "canonical order: {}", extras);
+    assert!(extras.contains("tts:textAlign=\"center\""));
+    assert!(extras.contains("tts:lineHeight=\"125%\""));
+    assert!(extras.contains("tts:opacity=\"0.8\""));
+}
+
+#[test]
+fn inline_p_styling_round_trips() {
+    // Mix of modelled + unmodelled inline tts:* on <p>. After
+    // parse → write → parse, the cue still has the same Bold wrapper
+    // and the same extras list.
+    let src = "<?xml version=\"1.0\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <body><div>\n\
+    <p begin=\"0s\" end=\"1s\" tts:fontStyle=\"italic\" tts:displayAlign=\"after\">round</p>\n\
+  </div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    // Parse-side: Italic wrapper + ttml_p_extra.0 with displayAlign.
+    let mut saw_italic = false;
+    visit(&t.cues[0].segments, &mut |s| {
+        if matches!(s, Segment::Italic(_)) {
+            saw_italic = true;
+        }
+    });
+    assert!(saw_italic, "inline tts:fontStyle=\"italic\" wraps content");
+    assert!(t
+        .metadata
+        .iter()
+        .any(|(k, v)| k == "ttml_p_extra.0" && v.contains("tts:displayAlign=\"after\"")));
+
+    // Write: the <p> regrows both the inline displayAlign extra and
+    // the writer emits `<span tts:fontStyle="italic">` from the
+    // Segment::Italic wrapper.
+    let written = ttml::write(&t);
+    let s = String::from_utf8(written).unwrap();
+    assert!(s.contains("tts:displayAlign=\"after\""), "{}", s);
+    assert!(s.contains("<span tts:fontStyle=\"italic\""), "{}", s);
+
+    // Re-parse the output and verify the same shape survives.
+    let t2 = ttml::parse(s.as_bytes()).unwrap();
+    assert_eq!(t2.cues.len(), 1);
+    let mut saw_italic2 = false;
+    visit(&t2.cues[0].segments, &mut |s| {
+        if matches!(s, Segment::Italic(_)) {
+            saw_italic2 = true;
+        }
+    });
+    assert!(saw_italic2, "italic survives round-trip");
+    assert!(t2
+        .metadata
+        .iter()
+        .any(|(k, v)| k == "ttml_p_extra.0" && v.contains("tts:displayAlign=\"after\"")));
+}
+
+#[test]
+fn inline_p_styling_textalign_justify_carried_too() {
+    // `justify` is the textAlign value with no IR home; it must ride
+    // the extras the same way the named-style path treats it.
+    let src = "<?xml version=\"1.0\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <body><div>\n\
+    <p begin=\"0s\" end=\"1s\" tts:textAlign=\"justify\">x</p>\n\
+  </div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    assert!(t
+        .metadata
+        .iter()
+        .any(|(k, v)| k == "ttml_p_extra.0" && v.contains("tts:textAlign=\"justify\"")));
+}
+
+#[test]
+fn p_without_inline_styling_does_not_emit_extras_key() {
+    // Negative case — a plain <p> must NOT push a stray `ttml_p_extra.<idx>`.
+    let t = ttml::parse(SAMPLE.as_bytes()).unwrap();
+    assert!(!t
+        .metadata
+        .iter()
+        .any(|(k, _)| k.starts_with("ttml_p_extra.")));
+}
+
 #[test]
 fn imsc1_region_without_cue_ref_still_round_trips() {
     // Region defined but no <p region="..."> — should still write the

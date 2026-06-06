@@ -283,6 +283,20 @@ track-level metadata so a parse → write round-trip is byte-faithful:
   `itts:forcedDisplay`, `itts:fillLineGap`).
 * `<p region="X">` cue-region references ride alongside the cue in
   `ttml_cue_region.<idx>`.
+* Inline `tts:*` styling attributes on `<p>` (TTML2 §8.1.5 — "An author
+  may associate a set of style properties with a `p` element by means
+  of either the `style` attribute or inline style attributes or a
+  combination thereof"). IR-modelled attrs (`tts:color`,
+  `tts:fontFamily`, `tts:fontSize`, `tts:fontWeight`, `tts:fontStyle`,
+  `tts:textDecoration`) wrap the cue's content with the equivalent
+  `Segment::Bold` / `Italic` / `Underline` / `Strike` / `Color` /
+  `Font` segments. IR-unmodelled inline attrs (the same
+  `displayAlign` / `lineHeight` / `opacity` / `textShadow` / … list as
+  `<style>` extras above, plus `tts:textAlign` in any value) ride a
+  per-cue `ttml_p_extra.<idx>` metadata channel in canonical spec
+  order. A parse → write → parse cycle is byte-stable for the inline-
+  styled `<p>`; the `xmlns:itts` namespace binding is regrown on `<tt>`
+  whenever a `ttml_p_extra` carries an IMSC1 `itts:*` attribute.
 * IR-unmodelled `tts:*` / `itts:*` attributes on `<style>` —
   `displayAlign`, `extent`, `origin`, `padding`, `lineHeight`,
   `opacity`, `textOutline`, `textShadow`, `writingMode`, `wrapOption`,

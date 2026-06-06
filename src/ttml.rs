@@ -37,6 +37,19 @@
 //! attribute list. A `<p region="...">` cue-region reference rides
 //! alongside the cue as per-cue `ttml_cue_region.<idx>` track metadata.
 //!
+//! TTML2 §8.1.5 lets a `<p>` carry inline `tts:*` styling attributes
+//! directly (in addition to or instead of a referenced `style="..."`).
+//! Modelled inline attrs (`color`, `fontFamily`, `fontSize`, `fontWeight`,
+//! `fontStyle`, `textDecoration`) wrap the cue's segments at parse time
+//! via the same `wrap_with_style` helper used for `<span>`. The full
+//! inline attribute list — including IR-unmodelled ones like
+//! `tts:textAlign`, `tts:displayAlign`, `tts:lineHeight`, `tts:opacity`,
+//! `tts:textOutline`, `tts:textShadow`, `tts:writingMode`,
+//! `tts:wrapOption`, `tts:direction`, `tts:rubyAlign`, etc. — is also
+//! captured verbatim in a per-cue `ttml_p_extra.<idx>` track-metadata
+//! entry in canonical spec order, so a parse → write → parse cycle is
+//! byte-stable for the inline-styled `<p>`.
+//!
 //! `<tt>` parameter attributes (`ttp:frameRate`, `ttp:tickRate`,
 //! `ttp:timeBase`, `ttp:profile`, `ttp:cellResolution`,
 //! `ttp:frameRateMultiplier`, `ttp:displayAspectRatio`,
@@ -197,6 +210,11 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
                 .iter()
                 .filter(|(k, _)| k.starts_with("ttml_region."))
                 .any(|(_, v)| v.contains("itts:"))
+        || track
+            .metadata
+            .iter()
+            .filter(|(k, _)| k.starts_with("ttml_p_extra."))
+            .any(|(_, v)| v.contains("itts:"))
     {
         needs_itts_ns = true;
     }
@@ -305,6 +323,15 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
         if let Some((_, region)) = track.metadata.iter().find(|(k, _)| k == &region_key) {
             out.push_str(&format!(" region=\"{}\"", escape_attr(region)));
         }
+        // Replay IR-unmodelled inline tts:* / itts:* attrs captured at
+        // parse time from this cue's `<p>` (TTML2 §8.1.5).
+        let p_extra_key = format!("ttml_p_extra.{}", idx);
+        if let Some((_, extras)) = track.metadata.iter().find(|(k, _)| k == &p_extra_key) {
+            if !extras.is_empty() {
+                out.push(' ');
+                out.push_str(extras);
+            }
+        }
         out.push('>');
         write_segments(&cue.segments, &mut out);
         out.push_str("</p>\n");
@@ -402,7 +429,30 @@ fn collect_cues(nodes: &[Node], track: &mut SubtitleTrack, parent_offset_us: i64
                     };
                     let style_ref = attr(e, "style");
                     let region_ref = attr(e, "region");
-                    let segments = collect_segments(&e.children);
+                    let mut segments = collect_segments(&e.children);
+                    // TTML2 §8.1.5: inline IR-modelled `tts:*` styling
+                    // attrs on `<p>` wrap the cue's content with the
+                    // equivalent Bold / Italic / Color / Font segment(s)
+                    // — same surface as `<span>` (§8.1.6).
+                    if p_has_modelled_inline_style(e) {
+                        let wrapped = wrap_with_style(e, segments);
+                        segments = match wrapped {
+                            // Unwrap the no-attr Font envelope
+                            // `wrap_with_style` adds when there's >1 child
+                            // so we don't graft a spurious Font wrapper.
+                            Segment::Font {
+                                family: None,
+                                size: None,
+                                children,
+                            } => children,
+                            other => vec![other],
+                        };
+                    }
+                    // IR-unmodelled inline tts:* attrs (textAlign,
+                    // displayAlign, lineHeight, opacity, …) ride the
+                    // extras channel — wrap_with_style can't lift them
+                    // into Segment form.
+                    let p_extras = collect_p_inline_extras(e);
                     let cue_idx = track.cues.len();
                     track.cues.push(SubtitleCue {
                         start_us,
@@ -415,6 +465,11 @@ fn collect_cues(nodes: &[Node], track: &mut SubtitleTrack, parent_offset_us: i64
                         track
                             .metadata
                             .push((format!("ttml_cue_region.{}", cue_idx), r));
+                    }
+                    if !p_extras.is_empty() {
+                        track
+                            .metadata
+                            .push((format!("ttml_p_extra.{}", cue_idx), p_extras));
                     }
                 }
                 _ => {
@@ -611,6 +666,45 @@ fn collect_style_extras(e: &Element) -> String {
             }
             continue;
         }
+        if let Some(v) = attr(e, name) {
+            push_attr(&mut out, name, &v);
+        }
+    }
+    out
+}
+
+/// The TTML2 §8.1.5 inline `tts:*` styling attributes on `<p>` that the
+/// unified IR `Segment` tree models. These get consumed by
+/// `wrap_with_style` at parse time (the cue's content gets wrapped in
+/// the equivalent Bold / Italic / Underline / Color / Font segments)
+/// and re-emitted from those segments at write time, so they do NOT
+/// ride the per-cue `ttml_p_extra` extras channel.
+const P_INLINE_MODELLED_ATTRS: &[&str] = &[
+    "tts:color",
+    "tts:fontFamily",
+    "tts:fontSize",
+    "tts:fontWeight",
+    "tts:fontStyle",
+    "tts:textDecoration",
+];
+
+/// True iff the `<p>` element carries any IR-modelled inline `tts:*`
+/// attribute that `wrap_with_style` would consume. Used to decide
+/// whether to wrap the cue's segments — IR-unmodelled-only inline
+/// styling rides the extras channel and leaves the segments alone.
+fn p_has_modelled_inline_style(e: &Element) -> bool {
+    P_INLINE_MODELLED_ATTRS
+        .iter()
+        .any(|name| attr(e, name).is_some())
+}
+
+/// Collect the IR-unmodelled inline `tts:*` / `itts:*` attributes on a
+/// `<p>` (canonical order — `STYLE_EXTRA_ORDER`), so a parse → write
+/// cycle replays them verbatim on the `<p>`. IR-modelled attrs are
+/// excluded because they round-trip through the wrapped segment tree.
+fn collect_p_inline_extras(e: &Element) -> String {
+    let mut out = String::new();
+    for &name in STYLE_EXTRA_ORDER {
         if let Some(v) = attr(e, name) {
             push_attr(&mut out, name, &v);
         }
