@@ -17,11 +17,16 @@ pub enum SourceFormat {
 
 /// A fully parsed subtitle file: track-level metadata + styles + cues.
 ///
-/// `metadata` keys follow a loose convention:
-/// * `title`, `author` — script info (ASS).
-/// * `play_res_x`, `play_res_y`, `wrap_style`, `scaled_border_and_shadow`,
-///   `timer`, `script_type` — ASS script-info extras.
-/// * `header` — raw WebVTT header trailing text after `WEBVTT`.
+/// `metadata` keys follow a loose convention. For ASS / SSA sources
+/// the full set of `[Script Info]` keys, their canonical lowercase
+/// IR-form spellings, and value-shape rules are documented on
+/// [`crate::ass_script_info`]; the typed accessor
+/// [`crate::ass_script_info::script_info`] turns the relevant pairs
+/// here into an `AssScriptInfo` struct without forcing every consumer
+/// to repeat the lowercase-snake-case lookup boilerplate. Other
+/// formats add their own keys — e.g. `header` for the raw WebVTT
+/// header trailing text after `WEBVTT`, `ttml_param.frameRate` for
+/// TTML, the various `vtt_*` keys for WebVTT regions / cue ids.
 #[derive(Clone, Debug, Default)]
 pub struct SubtitleTrack {
     pub source: Option<SourceFormat>,

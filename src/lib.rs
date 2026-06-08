@@ -49,6 +49,7 @@
 //! this crate deals with standalone files only.
 
 pub mod aqtitle;
+pub mod ass_script_info;
 pub mod codec;
 pub mod compositor;
 pub mod container;
@@ -77,6 +78,7 @@ use oxideav_core::RuntimeContext;
 use oxideav_core::{CodecCapabilities, CodecId, MediaType};
 use oxideav_core::{CodecInfo, CodecRegistry};
 
+pub use ass_script_info::{script_info, script_info_keys, AssScriptInfo, Collisions, WrapStyle};
 pub use compositor::Compositor;
 pub use font::BitmapFont;
 pub use ir::{SourceFormat, SubtitleTrack};

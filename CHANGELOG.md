@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed accessor for the SSA / ASS `[Script Info]` block carried in
+  `SubtitleTrack::metadata`, exposed as the `ass_script_info` module
+  with public re-exports at the crate root: `script_info(&track)`
+  returns an `AssScriptInfo` view, and `script_info_keys()` enumerates
+  the sixteen lowercase IR keys it recognises. The accessor only reads
+  the IR (parsing of `.ass` / `.ssa` files themselves lives in the
+  sibling `oxideav-ass` crate); it covers the spec-defined fields per
+  the SSA v4 format specification (mirrored at
+  `docs/subtitles/ass/ass-specs-tcax.html`) plus the `WrapStyle`
+  default whose 0..=3 numeric range the Aegisub override-tag reference
+  (`docs/subtitles/ass/aegisub-ass-tags.html`) documents alongside the
+  per-cue `\q` tag. `WrapStyle` is exposed as a typed enum
+  (`SmartEven` / `EndOfLine` / `None` / `SmartLower`) with
+  `from_value` / `as_u8` round-trip helpers; `Collisions` distinguishes
+  the spec-named `Normal` / `Reverse` modes and preserves any
+  vendor-specific freeform value via a third `Other(String)` variant.
+  `PlayResX` / `PlayResY` / `PlayDepth` are parsed as `u32`; `Timer`
+  as `f64` percent with `100.0000` (Aegisub default), integer, and
+  trailing-`%` shapes all tolerated; `ScaledBorderAndShadow` accepts
+  the spec `yes` / `no` plus `true` / `false` / `1` / `0` aliases
+  case-insensitively. Unknown keys are left in `metadata` untouched so
+  the accessor never drops information. Covered by 16 unit tests in
+  `ass_script_info::tests` and 5 integration tests in
+  `tests/ass_script_info.rs`.
 - WebVTT §5 default cue-component class colour resolution helpers
   `webvtt::default_class_color` and `webvtt::resolve_default_class_colors`,
   plus the `webvtt::DefaultClassKind` enum (`Foreground` /
