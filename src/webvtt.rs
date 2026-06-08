@@ -1681,6 +1681,96 @@ pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
     })
 }
 
+/// One of the WebVTT §5 default cue-component classes — a foreground colour
+/// (`white`, `lime`, `cyan`, `red`, `yellow`, `magenta`, `blue`, `black`) or
+/// the matching `bg_*` background colour.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DefaultClassKind {
+    /// `tts:color` presentational hint — sets the foreground.
+    Foreground,
+    /// `background-color` presentational hint — sets the cue background.
+    Background,
+}
+
+/// Resolve a single WebVTT §5 default cue-component class name to its
+/// presentational RGBA hint, together with whether the hint targets the
+/// foreground or the cue background.
+///
+/// The spec tables in §5.1 and §5.2 list eight foreground class names
+/// (`white`, `lime`, `cyan`, `red`, `yellow`, `magenta`, `blue`, `black`)
+/// and the matching `bg_*` background class names, each mapping to a fully
+/// opaque colour (`rgba(R,G,B,1)` in the spec, returned here as
+/// `(R, G, B, 0xff)`). Names outside the §5 tables return `None` so the
+/// caller can fall back to author-provided `::cue(...)` STYLE rules or to
+/// the spec's "no presentational hint" baseline.
+///
+/// Matching is **case-sensitive** per spec — `<c.Yellow>` and `<c.BG_BLUE>`
+/// are unrecognised author classes, not the default colours.
+pub fn default_class_color(name: &str) -> Option<(DefaultClassKind, (u8, u8, u8, u8))> {
+    match name {
+        // §5.1 — default text colours.
+        "white" => Some((DefaultClassKind::Foreground, (255, 255, 255, 0xff))),
+        "lime" => Some((DefaultClassKind::Foreground, (0, 255, 0, 0xff))),
+        "cyan" => Some((DefaultClassKind::Foreground, (0, 255, 255, 0xff))),
+        "red" => Some((DefaultClassKind::Foreground, (255, 0, 0, 0xff))),
+        "yellow" => Some((DefaultClassKind::Foreground, (255, 255, 0, 0xff))),
+        "magenta" => Some((DefaultClassKind::Foreground, (255, 0, 255, 0xff))),
+        "blue" => Some((DefaultClassKind::Foreground, (0, 0, 255, 0xff))),
+        "black" => Some((DefaultClassKind::Foreground, (0, 0, 0, 0xff))),
+        // §5.2 — default text background colours.
+        "bg_white" => Some((DefaultClassKind::Background, (255, 255, 255, 0xff))),
+        "bg_lime" => Some((DefaultClassKind::Background, (0, 255, 0, 0xff))),
+        "bg_cyan" => Some((DefaultClassKind::Background, (0, 255, 255, 0xff))),
+        "bg_red" => Some((DefaultClassKind::Background, (255, 0, 0, 0xff))),
+        "bg_yellow" => Some((DefaultClassKind::Background, (255, 255, 0, 0xff))),
+        "bg_magenta" => Some((DefaultClassKind::Background, (255, 0, 255, 0xff))),
+        "bg_blue" => Some((DefaultClassKind::Background, (0, 0, 255, 0xff))),
+        "bg_black" => Some((DefaultClassKind::Background, (0, 0, 0, 0xff))),
+        _ => None,
+    }
+}
+
+/// `(foreground, background)` presentational-hint colour pair returned by
+/// [`resolve_default_class_colors`]. Each slot carries the §5 fully-opaque
+/// RGBA tuple or `None` when no §5 class in the chain targeted that side.
+pub type DefaultClassColors = (Option<(u8, u8, u8, u8)>, Option<(u8, u8, u8, u8)>);
+
+/// Resolve a WebVTT class-segment dot-chain (e.g. the `name` field of
+/// [`Segment::Class`] for `<c.yellow.bg_blue>`) into the effective
+/// foreground and background presentational-hint colours.
+///
+/// The spec's cascade rule (§5.2 closing paragraph: "the order of
+/// appearance determines the cascade of the classes") means a later
+/// matching class wins over an earlier one within the same component. The
+/// example in §5 makes this explicit — `<c.yellow.bg_blue.magenta.bg_black>`
+/// renders as "magenta text on a black background" because `magenta`
+/// follows `yellow` and `bg_black` follows `bg_blue`.
+///
+/// Author-defined classes that don't appear in the §5 tables are skipped
+/// rather than rejecting the chain, so a mixed chain like
+/// `<c.warning.yellow.bg_black>` still resolves to yellow-on-black even
+/// though `warning` is an author class that may carry an unrelated
+/// `::cue(.warning)` STYLE rule.
+///
+/// Returns `(foreground, background)` as a [`DefaultClassColors`], each
+/// `None` when no §5 class in the chain targeted that hint. An empty
+/// chain returns `(None, None)`.
+pub fn resolve_default_class_colors(dot_chain: &str) -> DefaultClassColors {
+    let mut fg = None;
+    let mut bg = None;
+    for cls in dot_chain.split('.') {
+        if cls.is_empty() {
+            continue;
+        }
+        match default_class_color(cls) {
+            Some((DefaultClassKind::Foreground, rgba)) => fg = Some(rgba),
+            Some((DefaultClassKind::Background, rgba)) => bg = Some(rgba),
+            None => {}
+        }
+    }
+    (fg, bg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2787,5 +2877,150 @@ STYLE
         // resolving the entity in their source.
         assert_eq!(cue_text(&t1.cues[0]), "Tom & Jerry are friends & foes");
         assert_eq!(cue_text(&t2.cues[0]), "Tom & Jerry are friends & foes");
+    }
+
+    // ---- WebVTT §5 default cue-component class colour resolution ----
+
+    #[test]
+    fn default_class_color_resolves_all_eight_foreground_names() {
+        // §5.1 — every listed name maps to its tabled fully-opaque RGB.
+        let cases = [
+            ("white", (255u8, 255u8, 255u8)),
+            ("lime", (0, 255, 0)),
+            ("cyan", (0, 255, 255)),
+            ("red", (255, 0, 0)),
+            ("yellow", (255, 255, 0)),
+            ("magenta", (255, 0, 255)),
+            ("blue", (0, 0, 255)),
+            ("black", (0, 0, 0)),
+        ];
+        for (name, (r, g, b)) in cases {
+            let (kind, rgba) = default_class_color(name)
+                .unwrap_or_else(|| panic!("§5.1 class {name} should resolve"));
+            assert_eq!(kind, DefaultClassKind::Foreground, "{name}");
+            assert_eq!(rgba, (r, g, b, 0xff), "{name}");
+        }
+    }
+
+    #[test]
+    fn default_class_color_resolves_all_eight_background_names() {
+        // §5.2 — bg_* names mirror §5.1 colours but target the background.
+        let cases = [
+            ("bg_white", (255u8, 255u8, 255u8)),
+            ("bg_lime", (0, 255, 0)),
+            ("bg_cyan", (0, 255, 255)),
+            ("bg_red", (255, 0, 0)),
+            ("bg_yellow", (255, 255, 0)),
+            ("bg_magenta", (255, 0, 255)),
+            ("bg_blue", (0, 0, 255)),
+            ("bg_black", (0, 0, 0)),
+        ];
+        for (name, (r, g, b)) in cases {
+            let (kind, rgba) = default_class_color(name)
+                .unwrap_or_else(|| panic!("§5.2 class {name} should resolve"));
+            assert_eq!(kind, DefaultClassKind::Background, "{name}");
+            assert_eq!(rgba, (r, g, b, 0xff), "{name}");
+        }
+    }
+
+    #[test]
+    fn default_class_color_is_case_sensitive() {
+        // The §5 tables list names in lowercase only; an author class with
+        // any uppercase letter is not a default colour and must return None
+        // (the author-supplied `::cue(.Yellow) { color: cyan }` STYLE rule
+        // would then apply instead).
+        assert!(default_class_color("Yellow").is_none());
+        assert!(default_class_color("YELLOW").is_none());
+        assert!(default_class_color("BG_BLUE").is_none());
+        assert!(default_class_color("Bg_lime").is_none());
+        // Unknown lowercase author classes also don't resolve.
+        assert!(default_class_color("orange").is_none());
+        assert!(default_class_color("warning").is_none());
+        assert!(default_class_color("").is_none());
+    }
+
+    #[test]
+    fn resolve_chain_applies_cascade_within_each_target() {
+        // The §5 worked example: `<c.yellow.bg_blue.magenta.bg_black>`
+        // renders as "magenta text on a black background" because the later
+        // matching class wins for each presentational target.
+        let (fg, bg) = resolve_default_class_colors("yellow.bg_blue.magenta.bg_black");
+        assert_eq!(fg, Some((255, 0, 255, 0xff))); // magenta wins over yellow
+        assert_eq!(bg, Some((0, 0, 0, 0xff))); // bg_black wins over bg_blue
+    }
+
+    #[test]
+    fn resolve_chain_two_classes_text_and_background_only() {
+        // The §5 simpler worked example: `<c.yellow.bg_blue>` — one class
+        // of each kind, no cascade override.
+        let (fg, bg) = resolve_default_class_colors("yellow.bg_blue");
+        assert_eq!(fg, Some((255, 255, 0, 0xff)));
+        assert_eq!(bg, Some((0, 0, 255, 0xff)));
+    }
+
+    #[test]
+    fn resolve_chain_skips_unrecognised_author_classes() {
+        // Mixed chains where author-defined classes (here `warning`,
+        // `chapter-2`) appear alongside §5 defaults must still yield the
+        // §5 colours; the author classes contribute via STYLE rules
+        // separately, not through this resolver.
+        let (fg, bg) = resolve_default_class_colors("warning.yellow.chapter-2.bg_black");
+        assert_eq!(fg, Some((255, 255, 0, 0xff)));
+        assert_eq!(bg, Some((0, 0, 0, 0xff)));
+    }
+
+    #[test]
+    fn resolve_chain_with_no_default_classes_returns_none_none() {
+        // An author-only chain has no §5 hint — both slots are None so
+        // callers know to defer entirely to author STYLE rules.
+        assert_eq!(
+            resolve_default_class_colors("warning.intro.sidebar"),
+            (None, None)
+        );
+        assert_eq!(resolve_default_class_colors(""), (None, None));
+    }
+
+    #[test]
+    fn resolve_chain_tolerates_empty_dot_segments() {
+        // Stray adjacent dots (e.g. `<c.yellow..bg_blue>`) — the §5 cascade
+        // is defined by appearance order of matching names; empty segments
+        // are just skipped rather than poisoning the result.
+        let (fg, bg) = resolve_default_class_colors("yellow..bg_blue");
+        assert_eq!(fg, Some((255, 255, 0, 0xff)));
+        assert_eq!(bg, Some((0, 0, 255, 0xff)));
+        // Leading and trailing dots are likewise tolerated.
+        let (fg, bg) = resolve_default_class_colors(".red.");
+        assert_eq!(fg, Some((255, 0, 0, 0xff)));
+        assert_eq!(bg, None);
+    }
+
+    #[test]
+    fn resolve_chain_only_foreground_or_only_background() {
+        // A chain that names only foreground classes leaves the bg slot
+        // empty (and vice versa). The cascade rule still picks the last
+        // match within the side that has matches.
+        let (fg, bg) = resolve_default_class_colors("white.cyan.red");
+        assert_eq!(fg, Some((255, 0, 0, 0xff))); // red wins
+        assert_eq!(bg, None);
+        let (fg, bg) = resolve_default_class_colors("bg_white.bg_cyan.bg_red");
+        assert_eq!(fg, None);
+        assert_eq!(bg, Some((255, 0, 0, 0xff))); // bg_red wins
+    }
+
+    #[test]
+    fn resolve_chain_against_class_segment_name_round_trip() {
+        // The chain string this resolver consumes is identical to the
+        // `name` field the parser places on `Segment::Class` — verify the
+        // hop works end-to-end against a real cue body.
+        let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<c.yellow.bg_blue>x</c>\n";
+        let t = parse(src.as_bytes()).unwrap();
+        let cue = &t.cues[0];
+        let chain = match &cue.segments[0] {
+            Segment::Class { name, .. } => name.clone(),
+            other => panic!("expected Segment::Class, got {other:?}"),
+        };
+        let (fg, bg) = resolve_default_class_colors(&chain);
+        assert_eq!(fg, Some((255, 255, 0, 0xff)));
+        assert_eq!(bg, Some((0, 0, 255, 0xff)));
     }
 }

@@ -516,3 +516,66 @@ fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
         }
     }
 }
+
+/// WebVTT §5 worked example: `<c.yellow.bg_blue.magenta.bg_black>` renders
+/// as "magenta text on a black background" because the spec's cascade rule
+/// (§5.2 closing paragraph: "the order of appearance determines the
+/// cascade") picks the last matching class within each presentational
+/// target. The resolver consumes the dot-chain the parser already places on
+/// `Segment::Class::name`, so the hop from "parsed cue body" to "effective
+/// presentational hint" is one function call.
+#[test]
+fn default_cue_component_classes_5_resolve_through_class_segment_name() {
+    let src = "WEBVTT
+
+00:00:01.000 --> 00:00:02.000
+<c.yellow.bg_blue.magenta.bg_black>cascade winner</c>
+
+00:00:03.000 --> 00:00:04.000
+<c.warning.red.bg_lime>mixed author + default</c>
+
+00:00:05.000 --> 00:00:06.000
+<c.foo.bar>author-only chain</c>
+";
+    let t = webvtt::parse(src.as_bytes()).unwrap();
+    assert_eq!(t.cues.len(), 3);
+
+    // Cue 1 — §5 worked example: magenta over bg_black wins the cascade.
+    let chain1 = match &t.cues[0].segments[0] {
+        Segment::Class { name, .. } => name.clone(),
+        other => panic!("expected Class, got {other:?}"),
+    };
+    assert_eq!(
+        webvtt::resolve_default_class_colors(&chain1),
+        (Some((255, 0, 255, 0xff)), Some((0, 0, 0, 0xff))),
+    );
+
+    // Cue 2 — author class `warning` doesn't shadow §5 `red` / `bg_lime`.
+    let chain2 = match &t.cues[1].segments[0] {
+        Segment::Class { name, .. } => name.clone(),
+        other => panic!("expected Class, got {other:?}"),
+    };
+    assert_eq!(
+        webvtt::resolve_default_class_colors(&chain2),
+        (Some((255, 0, 0, 0xff)), Some((0, 255, 0, 0xff))),
+    );
+
+    // Cue 3 — chain has no §5 classes, both slots empty. Caller defers to
+    // author-supplied `::cue(.foo)` / `::cue(.bar)` STYLE rules.
+    let chain3 = match &t.cues[2].segments[0] {
+        Segment::Class { name, .. } => name.clone(),
+        other => panic!("expected Class, got {other:?}"),
+    };
+    assert_eq!(webvtt::resolve_default_class_colors(&chain3), (None, None),);
+
+    // The per-name single-class resolver agrees with the spec table for
+    // both presentational targets and is case-sensitive.
+    let (kind, rgba) = webvtt::default_class_color("cyan").unwrap();
+    assert_eq!(kind, webvtt::DefaultClassKind::Foreground);
+    assert_eq!(rgba, (0, 255, 255, 0xff));
+    let (kind, rgba) = webvtt::default_class_color("bg_yellow").unwrap();
+    assert_eq!(kind, webvtt::DefaultClassKind::Background);
+    assert_eq!(rgba, (255, 255, 0, 0xff));
+    assert!(webvtt::default_class_color("Cyan").is_none());
+    assert!(webvtt::default_class_color("BG_YELLOW").is_none());
+}

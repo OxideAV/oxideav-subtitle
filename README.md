@@ -108,6 +108,49 @@ A UTF-8 BOM on the file's first byte still works because the shared
 `encoding::decode_subtitle_text` helper strips it before the parser
 sees the signature line.
 
+## WebVTT §5 default cue-component classes
+
+The WebVTT §5.1 table reserves eight foreground class names (`white`,
+`lime`, `cyan`, `red`, `yellow`, `magenta`, `blue`, `black`) and §5.2
+mirrors them as eight `bg_*` background class names, each carrying a
+fully-opaque `rgba(R,G,B,1)` presentational-hint colour. The parser
+keeps `Segment::Class::name` as the verbatim dot-chain
+(`"yellow.bg_blue.magenta.bg_black"`) so existing call-sites continue to
+round-trip authored chains byte-stable; a downstream renderer that needs
+the resolved colours calls
+
+```rust
+use oxideav_subtitle::webvtt::{default_class_color, resolve_default_class_colors,
+                               DefaultClassKind};
+
+// Single-class lookup — returns the kind + RGBA, or None for names
+// outside §5.1 / §5.2.
+let (kind, rgba) = default_class_color("yellow").unwrap();
+assert_eq!(kind, DefaultClassKind::Foreground);
+assert_eq!(rgba, (255, 255, 0, 0xff));
+
+// Whole-chain resolution honours the §5.2 cascade rule — within each
+// presentational target, the last matching class wins. The spec
+// worked example `<c.yellow.bg_blue.magenta.bg_black>` resolves to
+// "magenta text on a black background":
+let (fg, bg) =
+    resolve_default_class_colors("yellow.bg_blue.magenta.bg_black");
+assert_eq!(fg, Some((255, 0, 255, 0xff)));
+assert_eq!(bg, Some((0,   0,   0, 0xff)));
+```
+
+Name matching is **case-sensitive** per spec — `Yellow`, `YELLOW`, and
+`BG_BLUE` are unrecognised author class names that fall through to
+`::cue(.Yellow)` STYLE rules instead of the default colour. Mixed
+chains where author classes (`warning`, `chapter-2`) sit alongside §5
+defaults are tolerated: the unrecognised classes are skipped and the
+§5 ones still resolve. An author-only chain returns `(None, None)` so
+the caller knows to defer entirely to author-supplied STYLE rules. The
+resolver is a pure presentational-hint computation — it never overrides
+an explicit `::cue(...)` STYLE rule the author defined for the same
+name (e.g. `::cue(.yellow) { color: cyan }` per the §5 closing note);
+the renderer composes the two layers in its own cascade.
+
 ## WebVTT cue settings
 
 The WebVTT timing line's cue settings (WebVTT §3.5) are parsed into the

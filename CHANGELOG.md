@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- WebVTT §5 default cue-component class colour resolution helpers
+  `webvtt::default_class_color` and `webvtt::resolve_default_class_colors`,
+  plus the `webvtt::DefaultClassKind` enum (`Foreground` /
+  `Background`). The §5.1 / §5.2 tables together reserve sixteen class
+  names — eight foreground (`white`, `lime`, `cyan`, `red`, `yellow`,
+  `magenta`, `blue`, `black`) and eight matching `bg_*` background
+  variants — each carrying a fully-opaque `rgba(R,G,B,1)` presentational
+  hint that the spec also lets author `::cue(...)` STYLE rules override.
+  `default_class_color` is a single-name lookup returning
+  `Option<(DefaultClassKind, (u8,u8,u8,u8))>` with case-sensitive
+  matching per spec, so `<c.Yellow>` and `<c.BG_BLUE>` remain
+  unrecognised author classes rather than aliasing the §5 defaults.
+  `resolve_default_class_colors` consumes the dot-chain the parser
+  already stores on `Segment::Class::name` (e.g.
+  `"yellow.bg_blue.magenta.bg_black"`) and returns
+  `(Option<fg>, Option<bg>)` after applying the §5.2 cascade rule —
+  within each presentational target, the last matching class in
+  appearance order wins. The §5 worked example
+  `<c.yellow.bg_blue.magenta.bg_black>` resolves to magenta-on-black,
+  matching the spec's explicit narration. Author-defined classes mixed
+  into the chain (`<c.warning.yellow.bg_black>`) are skipped rather
+  than rejecting the chain, and an author-only chain returns
+  `(None, None)` so the caller knows to defer entirely to author
+  STYLE rules. Empty / stray dot segments (`<c.yellow..bg_blue>`,
+  leading / trailing dots) are tolerated. Covered by 9 new
+  `webvtt::tests::{default_class_color_resolves_all_eight_foreground_names,
+  default_class_color_resolves_all_eight_background_names,
+  default_class_color_is_case_sensitive,
+  resolve_chain_applies_cascade_within_each_target,
+  resolve_chain_two_classes_text_and_background_only,
+  resolve_chain_skips_unrecognised_author_classes,
+  resolve_chain_with_no_default_classes_returns_none_none,
+  resolve_chain_tolerates_empty_dot_segments,
+  resolve_chain_only_foreground_or_only_background,
+  resolve_chain_against_class_segment_name_round_trip}`
+  unit tests plus
+  `tests/webvtt_parse.rs::default_cue_component_classes_5_resolve_through_class_segment_name`
+  integration test.
+
 ### Changed
 
 - WebVTT §6.4 cue-text tokenizer now decodes HTML character references
