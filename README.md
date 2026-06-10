@@ -84,6 +84,53 @@ this path.
 The bitmap-font path is unaffected by these and continues to honour
 bold / italic / per-run colour as before.
 
+## ASS / SSA Dialogue-text override-tag tokenizer
+
+The `ass_tags` module tokenizes the per-event Dialogue `Text` payload
+(file-level `.ass` / `.ssa` parsing lives in the sibling `oxideav-ass`
+crate) per the SSA v4 spec's Appendix A "Style override codes" and the
+Aegisub override-tag reference, both staged under `docs/subtitles/ass/`:
+
+```rust
+use oxideav_subtitle::ass_tags::{tokenize, emit, plain_text};
+use oxideav_subtitle::{AssTag, AssToken, WrapStyle};
+
+let toks = tokenize("There is a {\\b1}bold {\\b0}word here\\Nsecond line");
+assert_eq!(emit(&toks), "There is a {\\b1}bold {\\b0}word here\\Nsecond line");
+let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
+```
+
+* `{...}` override blocks split into per-tag items; "several overrides
+  within one set of braces" are kept in order.
+* The four boolean style flags the IR can model are typed —
+  `\b` (`Bold(Option<u32>)`, including the `\b<weight>` 100..900 form),
+  `\i` / `\u` / `\s` (`Option<bool>`, with the parameterless
+  reset-to-style form as `None`). The exact-prefix + digits-only match
+  means `\bord`, `\be`, `\blur`, `\shad`, and `\iclip` can't be
+  mistaken for flag forms.
+* Every other tag — colours, positioning, karaoke, `\t(...)` transforms
+  whose parenthesised argument carries nested backslash modifiers,
+  drawing-mode `\p` — is preserved verbatim as `AssTag::Other`, and
+  non-tag text inside a block becomes `AssTag::Comment`, so
+  `emit(&tokenize(s)) == s` byte-for-byte on every input (unterminated
+  `{` and unrecognised backslash sequences stay literal text).
+* The mid-text escapes `\n` (soft break), `\N` (hard break), and `\h`
+  (non-breaking hard space) are their own tokens; `plain_text` maps
+  them against the script's `WrapStyle` (from the `[Script Info]`
+  accessor) — `\n` breaks only in wrap mode 2 and is a regular space
+  otherwise, `\N` always breaks, `\h` becomes U+00A0.
+
+Typed coverage of the wider tag set (colours, positioning, karaoke) is
+the chain's next material.
+
+## ASS / SSA `[Script Info]` typed accessor
+
+`script_info(&track)` reads the SSA `[Script Info]` keys an ASS-source
+track carries in `SubtitleTrack::metadata` into a typed
+`AssScriptInfo` view — `PlayResX` / `PlayResY` / `PlayDepth` as `u32`,
+`Timer` as `f64` percent, `WrapStyle` and `Collisions` as enums,
+`ScaledBorderAndShadow` as `bool` — leaving unknown keys untouched.
+
 ## WebVTT signature and timestamp strictness
 
 The WebVTT parser enforces the §4.1 file-signature production and the

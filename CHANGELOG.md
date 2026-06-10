@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA Dialogue-text override-tag tokenizer (`ass_tags` module,
+  `AssToken` / `AssTag` re-exported at the crate root). `tokenize`
+  splits a per-event `Text` payload into plain-text runs, `{...}`
+  override blocks, and the three mid-text escapes (`\n` soft break,
+  `\N` hard break, `\h` non-breaking hard space) per the SSA v4 spec's
+  Appendix A "Style override codes"
+  (`docs/subtitles/ass/ass-specs-tcax.html`) and the Aegisub
+  override-tag reference (`docs/subtitles/ass/aegisub-ass-tags.html`).
+  Within a block, each `\tag` body extends to the next backslash at
+  parenthesis depth zero, so a `\t(0,1000,\fscx200\fscy200)` transform
+  whose argument list carries nested modifiers stays one tag. The four
+  boolean style flags the IR `Segment` tree can model are typed:
+  `\b` as `Bold(Option<u32>)` covering off / on / the `\b<weight>`
+  100..900 form, and `\i` / `\u` / `\s` as `Option<bool>` with the
+  parameterless reset-to-style-default form (spec: "Any style modifier
+  followed by no recognizable parameter resets to the default") as
+  `None`. The exact-prefix + digits-only-remainder name match keeps
+  `\bord` / `\be` / `\blur` / `\shad` / `\iclip` out of the flag arms.
+  Everything else — colours, positioning, karaoke, drawing-mode `\p` —
+  is preserved verbatim as `AssTag::Other`, and non-tag text inside a
+  block (the reference's "unrecognized text within override blocks is
+  silently ignored, so they are also commonly used for inline
+  comments") as `AssTag::Comment`, so the reciprocal `emit` reproduces
+  the original text byte-for-byte on every input: an unrecognised flag
+  parameter (`\i2`), an unterminated `{`, and a backslash before
+  anything other than `n` / `N` / `h` all stay literal. `plain_text`
+  strips a token stream to the user-visible text, mapping the escapes
+  against the script's `WrapStyle` (from the previous step's
+  `[Script Info]` accessor): `\n` breaks only in wrap mode 2 ("Both
+  `\n` and `\N` force line breaks") and is a regular space otherwise,
+  `\N` always breaks, `\h` becomes U+00A0 NO-BREAK SPACE. Covered by
+  20 unit tests in `ass_tags::tests` (including the spec's own bold /
+  italic / karaoke / drawing worked examples) and 2 integration tests
+  in `tests/ass_tags.rs`.
 - Typed accessor for the SSA / ASS `[Script Info]` block carried in
   `SubtitleTrack::metadata`, exposed as the `ass_script_info` module
   with public re-exports at the crate root: `script_info(&track)`
