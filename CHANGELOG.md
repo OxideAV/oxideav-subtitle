@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA typed colour / alpha override tags in `ass_tags`. The
+  `\c` / `\1c`–`\4c&H<bbggrr>&` family parses to
+  `AssTag::Color { target, short, hex }` and
+  `\alpha` / `\1a`–`\4a&H<aa>&` to `AssTag::Alpha { target, hex }`,
+  with the four components (primary / secondary fill, border, shadow)
+  typed as `AssColorTarget` (re-exported at the crate root) and
+  `target: None` for the all-components `\alpha` (per the SSA spec it
+  "defaults to `\1a`"). `hex` carries the verbatim digit run — the
+  spec's "Leading zeroes are not required" means `&HFF&` (pure red)
+  and `&H0000FF&` differ on the wire — and `short` keeps the `\c`
+  abbreviation of `\1c` distinct, so `emit` stays byte-stable for
+  every typed spelling. The bare `\c` / `\alpha` reset-to-style forms
+  are `hex: None`. New `decode_bgr_hex` (hexadecimal **Blue Green
+  Red** order, "the opposite order of HTML color codes" → `(r, g, b)`)
+  and `decode_alpha_hex` (`00` opaque, `FF` fully transparent)
+  helpers decode the runs. Only the canonical `&H<digits>&` parameter
+  shape is typed: a missing closing `&`, an empty or over-long digit
+  run (> 6 colour / > 2 alpha), non-hex digits, `\5c`, and the
+  `\clip` prefix cousin all stay verbatim `AssTag::Other`.
+
 - ASS / SSA Dialogue-text override-tag tokenizer (`ass_tags` module,
   `AssToken` / `AssTag` re-exported at the crate root). `tokenize`
   splits a per-event `Text` payload into plain-text runs, `{...}`

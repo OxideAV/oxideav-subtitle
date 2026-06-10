@@ -108,7 +108,21 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   reset-to-style form as `None`). The exact-prefix + digits-only match
   means `\bord`, `\be`, `\blur`, `\shad`, and `\iclip` can't be
   mistaken for flag forms.
-* Every other tag — colours, positioning, karaoke, `\t(...)` transforms
+* The colour / alpha family is typed. `\c` / `\1c`–`\4c&H<bbggrr>&`
+  parse to `AssTag::Color { target, short, hex }` — `target` is the
+  `AssColorTarget` component (primary / secondary fill, border,
+  shadow), `short` keeps the `\c`-abbreviation-of-`\1c` spelling
+  distinct so emit stays byte-stable, and `hex` is the verbatim digit
+  run ("Leading zeroes are not required" — `&HFF&` is pure red since
+  codes are hexadecimal in **Blue Green Red** order).
+  `\alpha` / `\1a`–`\4a&H<aa>&` parse to `AssTag::Alpha` the same way
+  (`target: None` = all components; `00` opaque, `FF` fully
+  transparent). The bare `\c` / `\alpha` forms are the
+  reset-to-style shape (`hex: None`). `decode_bgr_hex` /
+  `decode_alpha_hex` turn a digit run into `(r, g, b)` / `u8`.
+  Off-shape parameters — a missing closing `&`, an over-long digit
+  run, `\5c`, the `\clip` prefix cousin — stay verbatim untyped.
+* Every other tag — positioning, karaoke, `\t(...)` transforms
   whose parenthesised argument carries nested backslash modifiers,
   drawing-mode `\p` — is preserved verbatim as `AssTag::Other`, and
   non-tag text inside a block becomes `AssTag::Comment`, so
@@ -120,8 +134,8 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   accessor) — `\n` breaks only in wrap mode 2 and is a regular space
   otherwise, `\N` always breaks, `\h` becomes U+00A0.
 
-Typed coverage of the wider tag set (colours, positioning, karaoke) is
-the chain's next material.
+Typed coverage of the remaining tag set (positioning, karaoke) is the
+chain's next material.
 
 ## ASS / SSA `[Script Info]` typed accessor
 
