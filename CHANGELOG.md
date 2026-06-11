@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA typed alignment, karaoke, and positioning override tags in
+  `ass_tags`. `\an1`–`\an9` parse to `AssTag::AlignNumpad` and legacy
+  `\a` to `AssTag::AlignLegacy` over the documented value set (1–3,
+  +4 "Toptitle", +8 "Midtitle", explicit `\a0` reset), with
+  `legacy_align_to_numpad` mapping legacy values onto the numpad
+  layout. The karaoke family — `\k` instant, `\K` / `\kf` left-to-right
+  sweep (identical effects, distinct spellings preserved through the
+  new `AssKaraokeKind`, re-exported at the crate root), `\ko`
+  outline — parses to `AssTag::Karaoke { kind, centisec }` with
+  durations in hundredths of seconds. The three line-positioning
+  functions parse to `AssTag::Pos` / `AssTag::Org` (integer
+  script-resolution coordinates) and `AssTag::Move` (both arities;
+  the optional `t1,t2` millisecond animation window stays distinct
+  from the 4-argument spelling even when `0,0`). Only
+  canonically-spelled parameters are typed — embedded spaces, leading
+  zeroes, `+` signs, `-0`, off-arity argument lists, the undocumented
+  `\kt`, and the bare no-duration karaoke forms all stay verbatim
+  `AssTag::Other`, so `emit` remains byte-stable for every input.
+
 - ASS / SSA typed colour / alpha override tags in `ass_tags`. The
   `\c` / `\1c`–`\4c&H<bbggrr>&` family parses to
   `AssTag::Color { target, short, hex }` and

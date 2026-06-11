@@ -2,8 +2,10 @@
 //! (`ass_tags`), chained with the `[Script Info]` accessor's
 //! `WrapStyle` from the previous step.
 
-use oxideav_subtitle::ass_tags::{decode_alpha_hex, decode_bgr_hex, emit, plain_text, tokenize};
-use oxideav_subtitle::{AssColorTarget, AssTag, AssToken, WrapStyle};
+use oxideav_subtitle::ass_tags::{
+    decode_alpha_hex, decode_bgr_hex, emit, legacy_align_to_numpad, plain_text, tokenize,
+};
+use oxideav_subtitle::{AssColorTarget, AssKaraokeKind, AssTag, AssToken, WrapStyle};
 
 #[test]
 fn realistic_dialogue_text_round_trips_byte_stable() {
@@ -36,6 +38,30 @@ fn realistic_dialogue_text_round_trips_byte_stable() {
         AssToken::Override(tags) if tags.contains(&colour)
     )));
     assert_eq!(decode_bgr_hex("D8F8F8"), Some((0xF8, 0xF8, 0xD8)));
+    // … the typeset block's position + numpad alignment (typed,
+    // alongside the verbatim \t transform in the same brace set) …
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![
+            AssTag::Pos { x: 640, y: 360 },
+            AssTag::AlignNumpad(Some(8)),
+            AssTag::Color {
+                target: AssColorTarget::Primary,
+                short: false,
+                hex: Some("D8F8F8".into()),
+            },
+            AssTag::Other("t(0,500,\\fscx120\\fscy120)".into()),
+        ])
+    );
+    // … the karaoke syllable timings (centiseconds) …
+    assert!(tokens.iter().any(|t| *t
+        == AssToken::Override(vec![AssTag::Karaoke {
+            kind: AssKaraokeKind::Instant,
+            centisec: 62,
+        }])));
+    // … legacy-alignment conversion for renderers that only speak
+    // numpad values …
+    assert_eq!(legacy_align_to_numpad(6), Some(8));
     // … and the escapes.
     assert!(tokens.contains(&AssToken::HardBreak));
     assert!(tokens.contains(&AssToken::HardSpace));

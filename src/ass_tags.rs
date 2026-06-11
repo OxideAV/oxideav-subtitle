@@ -31,12 +31,16 @@
 //!   lists (`\t(...)`, `\move(...)`, `\pos(...)`, `\fad(...)`, …).
 //!
 //! The typed layer covers the four boolean style flags (`\b`, `\i`,
-//! `\u`, `\s` — the ones the IR `Segment` tree can model) and the
-//! colour / alpha family (`\c`, `\1c`–`\4c`, `\alpha`, `\1a`–`\4a`).
+//! `\u`, `\s` — the ones the IR `Segment` tree can model), the
+//! colour / alpha family (`\c`, `\1c`–`\4c`, `\alpha`, `\1a`–`\4a`),
+//! the two alignment tags (`\an` numpad, `\a` legacy), the karaoke
+//! family (`\k`, `\K`, `\kf`, `\ko`), and the three line-positioning
+//! functions (`\pos`, `\move`, `\org`).
 //! Every other tag is preserved verbatim in [`AssTag::Other`], so
 //! [`emit`] reproduces the original text byte-for-byte and no
 //! information is dropped. Typed coverage of the remaining tag set
-//! (positioning, karaoke, …) is follow-up material.
+//! (`\t` transforms, `\fad` / `\fade`, `\clip`, font metrics,
+//! rotation, …) is follow-up material.
 
 use crate::ass_script_info::WrapStyle;
 
@@ -80,6 +84,33 @@ pub enum AssColorTarget {
     Border,
     /// `\4c` / `\4a` — shadow.
     Shadow,
+}
+
+/// Which highlight effect a `\k`-family karaoke tag selects.
+///
+/// Per the Aegisub reference, "The `\k` family of tags mark up
+/// subtitles for karaoke effects by specifying the duration of each
+/// syllable" — "The duration is given in centiseconds, ie. a duration
+/// of 100 is equivalent to 1 second."
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssKaraokeKind {
+    /// `\k` — "Before highlight, the syllable is filled with the
+    /// secondary color and alpha. When the syllable starts, the fill
+    /// is instantly changed to use primary color and alpha."
+    Instant,
+    /// `\K` — sweep, uppercase spelling. "`\K` and `\kf`: These two
+    /// are identical. Note that `\K` is an uppercase K and is
+    /// different from lowercase `\k`." Kept distinct from
+    /// [`AssKaraokeKind::Sweep`] so [`emit`] stays byte-stable.
+    SweepCap,
+    /// `\kf` — "the fill changes from secondary to primary with a
+    /// sweep from left to right, so the sweep ends when the syllable
+    /// time is over."
+    Sweep,
+    /// `\ko` — "Similar to `\k`, except that before highlight, the
+    /// border/outline of the syllable is removed, and appears
+    /// instantly when the syllable starts."
+    Outline,
 }
 
 /// One tag inside an override block.
@@ -135,9 +166,78 @@ pub enum AssTag {
         /// Verbatim `<aa>` hex digits, or `None` for the reset form.
         hex: Option<String>,
     },
+    /// `\an<1..=9>` — numpad alignment. Per the Aegisub reference,
+    /// "The `\an` tag uses 'numpad' values for the pos, ie. the
+    /// alignment values correspond to the positions of the digits on
+    /// the numeric keypad" (1/2/3 bottom, 4/5/6 middle, 7/8/9 top,
+    /// left-to-right within each row). "Only the first appearance
+    /// counts." `None` is the parameterless reset-to-style form.
+    AlignNumpad(Option<u8>),
+    /// `\a<alignment>` — legacy SSA alignment. "Use 1 for
+    /// left-alignment, 2 for center alignment and 3 for
+    /// right-alignment"; "Adding 4 to the value specifies a
+    /// 'Toptitle'. Adding 8 to the value specifies a 'Midtitle'."
+    /// `Some(0)` is the explicit `\a0` spelling ("0 or nothing resets
+    /// to the style default"), `None` the parameterless form; the
+    /// other typed values are 1–3, 5–7, 9–11 (`\a4` / `\a8` are not
+    /// documented shapes and stay verbatim). Convert with
+    /// [`legacy_align_to_numpad`].
+    AlignLegacy(Option<u8>),
+    /// `\k` / `\K` / `\kf` / `\ko<duration>` — karaoke syllable
+    /// timing; `duration` "is in hundredths of seconds" (the SSA
+    /// spec) / "given in centiseconds" (the Aegisub reference). The
+    /// undocumented `\kt` and the bare no-duration forms stay
+    /// verbatim untyped.
+    Karaoke {
+        /// Which highlight effect the spelling selects.
+        kind: AssKaraokeKind,
+        /// Highlight duration in centiseconds.
+        centisec: u32,
+    },
+    /// `\pos(<x>,<y>)` — line position. "The X and Y coordinates must
+    /// be integers and are given in the script resolution coordinate
+    /// system"; the line's alignment "is used as anchor point for the
+    /// position". Per the SSA spec it "Defaults to
+    /// `\move(<x>, <y>, <x>, <y>, 0, 0)`".
+    Pos {
+        /// Anchor X in script-resolution pixels.
+        x: i32,
+        /// Anchor Y in script-resolution pixels.
+        y: i32,
+    },
+    /// `\move(<x1>,<y1>,<x2>,<y2>[,<t1>,<t2>])` — constant-speed line
+    /// movement from `(x1, y1)` to `(x2, y2)` in script-resolution
+    /// coordinates. `times` carries the optional `<t1>, <t2>`
+    /// "Animation beginning, ending time offset [ms]" pair, relative
+    /// to the line's start time; "Specifying both t1 and t2 as 0
+    /// (zero) is the same as using the first version" but the two
+    /// spellings are kept distinct so [`emit`] stays byte-stable.
+    Move {
+        /// Start X.
+        x1: i32,
+        /// Start Y.
+        y1: i32,
+        /// End X.
+        x2: i32,
+        /// End Y.
+        y2: i32,
+        /// Optional `(t1, t2)` animation window in milliseconds.
+        times: Option<(u32, u32)>,
+    },
+    /// `\org(<x>,<y>)` — rotation origin. "Moves the default origin
+    /// at (x,y)" (SSA spec); "Set the origin point used for rotation.
+    /// This affects all rotations of the line. The X and Y
+    /// coordinates are given in integer script resolution pixels"
+    /// (Aegisub reference).
+    Org {
+        /// Origin X in script-resolution pixels.
+        x: i32,
+        /// Origin Y in script-resolution pixels.
+        y: i32,
+    },
     /// Any other tag, kept verbatim — the full body after the
     /// backslash, including parenthesised parameter lists
-    /// (`t(0,1000,\fscx200)`, `pos(320,240)`, `1c&HFF&`, …).
+    /// (`t(0,1000,\fscx200)`, `fad(200,200)`, `1c&HFF&`, …).
     Other(String),
     /// Non-tag text inside the block, kept verbatim. The Aegisub
     /// reference: "Any unrecognized text within override blocks is
@@ -262,6 +362,9 @@ fn classify(tag: &str) -> AssTag {
     if let Some(typed) = classify_color_alpha(tag) {
         return typed;
     }
+    if let Some(typed) = classify_position_karaoke(tag) {
+        return typed;
+    }
     let (head, arg) = match tag.chars().next() {
         Some(c @ ('b' | 'i' | 'u' | 's')) => (c, &tag[1..]),
         _ => return AssTag::Other(tag.to_string()),
@@ -340,6 +443,125 @@ fn classify_color_alpha(tag: &str) -> Option<AssTag> {
                 hex,
             })
         }
+        _ => None,
+    }
+}
+
+/// Try the alignment / karaoke / positioning tag family: `\an`, `\a`,
+/// `\k` / `\K` / `\kf` / `\ko`, `\pos(...)`, `\move(...)`,
+/// `\org(...)`. Only canonically-spelled parameters are typed (see
+/// [`canon_i32`]); off-shape arities, signs, spacing, and the
+/// undocumented cousins (`\kt`, `\a4` / `\a8`, `\an0`) return `None`
+/// so the caller keeps them verbatim.
+fn classify_position_karaoke(tag: &str) -> Option<AssTag> {
+    if let Some(rest) = tag.strip_prefix("an") {
+        if rest.is_empty() {
+            return Some(AssTag::AlignNumpad(None));
+        }
+        let v = canon_u8(rest)?;
+        return (1..=9).contains(&v).then_some(AssTag::AlignNumpad(Some(v)));
+    }
+    if let Some(args) = paren_args(tag, "pos") {
+        let (x, y) = args.split_once(',')?;
+        return Some(AssTag::Pos {
+            x: canon_i32(x)?,
+            y: canon_i32(y)?,
+        });
+    }
+    if let Some(args) = paren_args(tag, "org") {
+        let (x, y) = args.split_once(',')?;
+        return Some(AssTag::Org {
+            x: canon_i32(x)?,
+            y: canon_i32(y)?,
+        });
+    }
+    if let Some(args) = paren_args(tag, "move") {
+        let p: Vec<&str> = args.split(',').collect();
+        let times = match p.len() {
+            4 => None,
+            6 => Some((canon_u32(p[4])?, canon_u32(p[5])?)),
+            _ => return None,
+        };
+        return Some(AssTag::Move {
+            x1: canon_i32(p[0])?,
+            y1: canon_i32(p[1])?,
+            x2: canon_i32(p[2])?,
+            y2: canon_i32(p[3])?,
+            times,
+        });
+    }
+    let (kind, arg) = if let Some(r) = tag.strip_prefix("kf") {
+        (AssKaraokeKind::Sweep, r)
+    } else if let Some(r) = tag.strip_prefix("ko") {
+        (AssKaraokeKind::Outline, r)
+    } else if let Some(r) = tag.strip_prefix('k') {
+        (AssKaraokeKind::Instant, r)
+    } else if let Some(r) = tag.strip_prefix('K') {
+        (AssKaraokeKind::SweepCap, r)
+    } else if let Some(rest) = tag.strip_prefix('a') {
+        // Legacy \a. \alpha was consumed by the colour / alpha family
+        // and \an by the arm above, so `rest` here is the bare or
+        // numeric legacy form (or some unrelated a-prefixed tag).
+        if rest.is_empty() {
+            return Some(AssTag::AlignLegacy(None));
+        }
+        let v = canon_u8(rest)?;
+        return matches!(v, 0..=3 | 5..=7 | 9..=11).then_some(AssTag::AlignLegacy(Some(v)));
+    } else {
+        return None;
+    };
+    // A karaoke tag with no duration is not a documented reset shape
+    // (the duration has no style default to reset to), so the bare
+    // forms fall through verbatim via canon_u32's None.
+    Some(AssTag::Karaoke {
+        kind,
+        centisec: canon_u32(arg)?,
+    })
+}
+
+/// `<name>(<args>)` with nothing after the closing parenthesis →
+/// the raw argument list.
+fn paren_args<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    tag.strip_prefix(name)?.strip_prefix('(')?.strip_suffix(')')
+}
+
+/// Parse a canonically-spelled decimal integer: the typed layer only
+/// accepts a spelling that re-emits identically
+/// (`v.to_string() == s`), so leading zeroes, a `+` sign, `-0`, and
+/// embedded whitespace all stay verbatim untyped and [`emit`] remains
+/// byte-stable.
+fn canon_i32(s: &str) -> Option<i32> {
+    let v: i32 = s.parse().ok()?;
+    (v.to_string() == s).then_some(v)
+}
+
+/// [`canon_i32`] for an unsigned millisecond / centisecond field.
+fn canon_u32(s: &str) -> Option<u32> {
+    let v: u32 = s.parse().ok()?;
+    (v.to_string() == s).then_some(v)
+}
+
+/// [`canon_i32`] for a single-byte alignment field.
+fn canon_u8(s: &str) -> Option<u8> {
+    let v: u8 = s.parse().ok()?;
+    (v.to_string() == s).then_some(v)
+}
+
+/// Map a legacy `\a` alignment value to the equivalent `\an` numpad
+/// value.
+///
+/// Per the references: legacy 1 / 2 / 3 are bottom
+/// left / center / right ("Use 1 for left-alignment, 2 for center
+/// alignment and 3 for right-alignment"); "Adding 4 to the value
+/// specifies a 'Toptitle'" (5 / 6 / 7 → numpad top row 7 / 8 / 9);
+/// "Adding 8 to the value specifies a 'Midtitle'" (9 / 10 / 11 →
+/// numpad middle row 4 / 5 / 6). Returns `None` for 0 (reset — no
+/// fixed numpad value), 4, 8, and anything above 11.
+pub fn legacy_align_to_numpad(a: u8) -> Option<u8> {
+    match a {
+        1..=3 => Some(a),
+        5..=7 => Some(a + 2),
+        9..=11 => Some(a - 5),
         _ => None,
     }
 }
@@ -432,6 +654,46 @@ pub fn emit(tokens: &[AssToken]) -> String {
                                 }
                             }
                             push_amp_hex(&mut out, hex);
+                        }
+                        AssTag::AlignNumpad(v) => {
+                            out.push_str("\\an");
+                            if let Some(v) = v {
+                                out.push_str(&v.to_string());
+                            }
+                        }
+                        AssTag::AlignLegacy(v) => {
+                            out.push_str("\\a");
+                            if let Some(v) = v {
+                                out.push_str(&v.to_string());
+                            }
+                        }
+                        AssTag::Karaoke { kind, centisec } => {
+                            out.push_str(match kind {
+                                AssKaraokeKind::Instant => "\\k",
+                                AssKaraokeKind::SweepCap => "\\K",
+                                AssKaraokeKind::Sweep => "\\kf",
+                                AssKaraokeKind::Outline => "\\ko",
+                            });
+                            out.push_str(&centisec.to_string());
+                        }
+                        AssTag::Pos { x, y } => {
+                            out.push_str(&format!("\\pos({x},{y})"));
+                        }
+                        AssTag::Org { x, y } => {
+                            out.push_str(&format!("\\org({x},{y})"));
+                        }
+                        AssTag::Move {
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            times,
+                        } => {
+                            out.push_str(&format!("\\move({x1},{y1},{x2},{y2}"));
+                            if let Some((t1, t2)) = times {
+                                out.push_str(&format!(",{t1},{t2}"));
+                            }
+                            out.push(')');
                         }
                         AssTag::Other(body) => {
                             out.push('\\');
@@ -651,17 +913,260 @@ mod tests {
     }
 
     #[test]
-    fn positioning_and_font_tags_stay_verbatim() {
+    fn font_tags_stay_verbatim_next_to_typed_position() {
         let s = "{\\pos(320,240)\\fnCourier New\\fs28}x";
         assert_eq!(
             tokenize(s)[0],
             AssToken::Override(vec![
-                AssTag::Other("pos(320,240)".into()),
+                AssTag::Pos { x: 320, y: 240 },
                 AssTag::Other("fnCourier New".into()),
                 AssTag::Other("fs28".into()),
             ])
         );
         roundtrip(s);
+    }
+
+    #[test]
+    fn numpad_alignment_types_and_validates() {
+        assert_eq!(
+            tokenize("{\\an8}")[0],
+            AssToken::Override(vec![AssTag::AlignNumpad(Some(8))])
+        );
+        // Parameterless = reset to the line style's alignment.
+        assert_eq!(
+            tokenize("{\\an}")[0],
+            AssToken::Override(vec![AssTag::AlignNumpad(None)])
+        );
+        // Outside the numpad 1..=9 (or non-canonical): verbatim.
+        for (s, body) in [
+            ("{\\an0}", "an0"),
+            ("{\\an10}", "an10"),
+            ("{\\an08}", "an08"),
+            ("{\\an8x}", "an8x"),
+        ] {
+            assert_eq!(
+                tokenize(s),
+                vec![AssToken::Override(vec![AssTag::Other(body.into())])],
+                "for {s:?}"
+            );
+            roundtrip(s);
+        }
+        roundtrip("{\\an8}{\\an}");
+    }
+
+    #[test]
+    fn legacy_alignment_spec_examples_type() {
+        // Appendix A examples: {\a1} left-justified subtitle, {\a5}
+        // left-justified toptitle, {\a11} right-justified midtitle.
+        for (s, v) in [
+            ("{\\a1}", 1u8),
+            ("{\\a2}", 2),
+            ("{\\a3}", 3),
+            ("{\\a5}", 5),
+            ("{\\a11}", 11),
+        ] {
+            assert_eq!(
+                tokenize(s)[0],
+                AssToken::Override(vec![AssTag::AlignLegacy(Some(v))]),
+                "for {s:?}"
+            );
+            roundtrip(s);
+        }
+        // "0 or nothing resets to the style default" — both spellings
+        // typed, kept distinct for emit.
+        assert_eq!(
+            tokenize("{\\a0}")[0],
+            AssToken::Override(vec![AssTag::AlignLegacy(Some(0))])
+        );
+        assert_eq!(
+            tokenize("{\\a}")[0],
+            AssToken::Override(vec![AssTag::AlignLegacy(None)])
+        );
+        roundtrip("{\\a0}{\\a}");
+        // 4 / 8 / 12 / non-canonical spellings are not documented
+        // legacy values: verbatim.
+        for (s, body) in [
+            ("{\\a4}", "a4"),
+            ("{\\a8}", "a8"),
+            ("{\\a12}", "a12"),
+            ("{\\a02}", "a02"),
+        ] {
+            assert_eq!(
+                tokenize(s),
+                vec![AssToken::Override(vec![AssTag::Other(body.into())])],
+                "for {s:?}"
+            );
+            roundtrip(s);
+        }
+    }
+
+    #[test]
+    fn legacy_to_numpad_mapping() {
+        // Bottom row maps to itself; "Adding 4" = toptitle = numpad
+        // top row; "Adding 8" = midtitle = numpad middle row.
+        for (legacy, numpad) in [
+            (1, 1),
+            (2, 2),
+            (3, 3),
+            (5, 7),
+            (6, 8),
+            (7, 9),
+            (9, 4),
+            (10, 5),
+            (11, 6),
+        ] {
+            assert_eq!(legacy_align_to_numpad(legacy), Some(numpad));
+        }
+        for bad in [0, 4, 8, 12, 255] {
+            assert_eq!(legacy_align_to_numpad(bad), None);
+        }
+    }
+
+    #[test]
+    fn karaoke_spec_example_types() {
+        // Appendix A: {\k94}This {\k48}is {\k24}a {\k150}karaoke line
+        // — "The durations are in hundredths of seconds."
+        let s = "{\\k94}This {\\k48}is {\\k24}a {\\k150}karaoke {\\k94}line";
+        let toks = tokenize(s);
+        assert_eq!(
+            toks[0],
+            AssToken::Override(vec![AssTag::Karaoke {
+                kind: AssKaraokeKind::Instant,
+                centisec: 94,
+            }])
+        );
+        assert_eq!(
+            toks[6],
+            AssToken::Override(vec![AssTag::Karaoke {
+                kind: AssKaraokeKind::Instant,
+                centisec: 150,
+            }])
+        );
+        roundtrip(s);
+    }
+
+    #[test]
+    fn karaoke_kinds_keep_their_spelling() {
+        // \K and \kf are "identical" effects but distinct bytes.
+        let toks = tokenize("{\\K94}{\\kf94}{\\ko30}{\\k0}");
+        assert_eq!(
+            toks,
+            vec![
+                AssToken::Override(vec![AssTag::Karaoke {
+                    kind: AssKaraokeKind::SweepCap,
+                    centisec: 94,
+                }]),
+                AssToken::Override(vec![AssTag::Karaoke {
+                    kind: AssKaraokeKind::Sweep,
+                    centisec: 94,
+                }]),
+                AssToken::Override(vec![AssTag::Karaoke {
+                    kind: AssKaraokeKind::Outline,
+                    centisec: 30,
+                }]),
+                AssToken::Override(vec![AssTag::Karaoke {
+                    kind: AssKaraokeKind::Instant,
+                    centisec: 0,
+                }]),
+            ]
+        );
+        roundtrip("{\\K94}{\\kf94}{\\ko30}{\\k0}");
+    }
+
+    #[test]
+    fn off_shape_karaoke_stays_verbatim() {
+        // Bare forms (duration has no style default), the undocumented
+        // \kt, and non-canonical digits are preserved untyped.
+        for (s, body) in [
+            ("{\\k}", "k"),
+            ("{\\K}", "K"),
+            ("{\\kf}", "kf"),
+            ("{\\ko}", "ko"),
+            ("{\\kt94}", "kt94"),
+            ("{\\k094}", "k094"),
+            ("{\\k-5}", "k-5"),
+        ] {
+            assert_eq!(
+                tokenize(s),
+                vec![AssToken::Override(vec![AssTag::Other(body.into())])],
+                "for {s:?}"
+            );
+            roundtrip(s);
+        }
+    }
+
+    #[test]
+    fn pos_and_org_type_with_integer_coordinates() {
+        assert_eq!(
+            tokenize("{\\pos(640,360)}")[0],
+            AssToken::Override(vec![AssTag::Pos { x: 640, y: 360 }])
+        );
+        // "The X and Y coordinates must be integers" — negatives are
+        // legal integers (off-screen anchor).
+        assert_eq!(
+            tokenize("{\\pos(-10,5)}")[0],
+            AssToken::Override(vec![AssTag::Pos { x: -10, y: 5 }])
+        );
+        assert_eq!(
+            tokenize("{\\org(320,240)}")[0],
+            AssToken::Override(vec![AssTag::Org { x: 320, y: 240 }])
+        );
+        roundtrip("{\\pos(640,360)}{\\pos(-10,5)}{\\org(320,240)}");
+    }
+
+    #[test]
+    fn move_types_both_arities() {
+        // Aegisub example: \move(100,150,300,350) — full-duration move.
+        assert_eq!(
+            tokenize("{\\move(100,150,300,350)}")[0],
+            AssToken::Override(vec![AssTag::Move {
+                x1: 100,
+                y1: 150,
+                x2: 300,
+                y2: 350,
+                times: None,
+            }])
+        );
+        // Six-parameter form with the [ms] animation window; the
+        // both-zero window means the same as the four-parameter form
+        // but keeps its own spelling.
+        assert_eq!(
+            tokenize("{\\move(100,150,300,350,500,1500)}")[0],
+            AssToken::Override(vec![AssTag::Move {
+                x1: 100,
+                y1: 150,
+                x2: 300,
+                y2: 350,
+                times: Some((500, 1500)),
+            }])
+        );
+        roundtrip("{\\move(100,150,300,350)}{\\move(100,150,300,350,0,0)}");
+    }
+
+    #[test]
+    fn off_shape_position_functions_stay_verbatim() {
+        for (s, body) in [
+            ("{\\pos(320, 240)}", "pos(320, 240)"),     // embedded space
+            ("{\\pos(007,2)}", "pos(007,2)"),           // leading zeroes
+            ("{\\pos(+3,2)}", "pos(+3,2)"),             // plus sign
+            ("{\\pos(-0,2)}", "pos(-0,2)"),             // negative zero
+            ("{\\pos(1.5,2)}", "pos(1.5,2)"),           // not an integer
+            ("{\\pos(320)}", "pos(320)"),               // missing y
+            ("{\\pos(1,2,3)}", "pos(1,2,3)"),           // extra coordinate
+            ("{\\pos(1,2)x}", "pos(1,2)x"),             // trailing junk
+            ("{\\pos}", "pos"),                         // no parameter list
+            ("{\\move(1,2,3,4,5)}", "move(1,2,3,4,5)"), // 5-arg arity
+            ("{\\move(1,2,3,4,-5,6)}", "move(1,2,3,4,-5,6)"), // negative ms
+            ("{\\pbo-4}", "pbo-4"),                     // prefix cousins
+            ("{\\p1}", "p1"),
+        ] {
+            assert_eq!(
+                tokenize(s),
+                vec![AssToken::Override(vec![AssTag::Other(body.into())])],
+                "for {s:?}"
+            );
+            roundtrip(s);
+        }
     }
 
     #[test]
@@ -818,12 +1323,6 @@ mod tests {
         assert_eq!(decode_bgr_hex("FFFFFFF"), None);
         assert_eq!(decode_bgr_hex(""), None);
         assert_eq!(decode_alpha_hex("123"), None);
-    }
-
-    #[test]
-    fn karaoke_line_round_trips() {
-        // Appendix A example: {\k94}This {\k48}is {\k24}a {\k150}karaoke
-        roundtrip("{\\k94}This {\\k48}is {\\k24}a {\\k150}karaoke {\\k94}line");
     }
 
     #[test]

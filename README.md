@@ -122,8 +122,30 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   `decode_alpha_hex` turn a digit run into `(r, g, b)` / `u8`.
   Off-shape parameters — a missing closing `&`, an over-long digit
   run, `\5c`, the `\clip` prefix cousin — stay verbatim untyped.
-* Every other tag — positioning, karaoke, `\t(...)` transforms
-  whose parenthesised argument carries nested backslash modifiers,
+* The alignment pair is typed. `\an1`–`\an9` parse to
+  `AssTag::AlignNumpad` ("numpad" layout: 1/2/3 bottom, 4/5/6 middle,
+  7/8/9 top); legacy `\a` parses to `AssTag::AlignLegacy` over the
+  documented value set (1–3, +4 "Toptitle" → 5–7, +8 "Midtitle" →
+  9–11, and the explicit `\a0` reset). `legacy_align_to_numpad`
+  converts a legacy value to its numpad equivalent for renderers that
+  only speak `\an`. Parameterless `\an` / `\a` are the reset-to-style
+  shape; `\a4` / `\a8` / `\an0` stay verbatim untyped.
+* The karaoke family is typed: `\k` (instant fill switch), `\K` and
+  `\kf` (left-to-right sweep — identical effects whose distinct
+  spellings are preserved via `AssKaraokeKind`), and `\ko` (outline)
+  parse to `AssTag::Karaoke { kind, centisec }`, durations in
+  hundredths of seconds. The undocumented `\kt` and bare no-duration
+  forms stay verbatim.
+* The three line-positioning functions are typed: `\pos(x,y)`,
+  `\org(x,y)`, and both `\move` arities (`x1,y1,x2,y2` plus the
+  optional `t1,t2` millisecond animation window, kept distinct from
+  the 4-argument spelling even when `0,0`). Coordinates are integers
+  in script-resolution pixels. Only canonically-spelled integers are
+  typed — embedded spaces, leading zeroes, a `+` sign, `-0`, or an
+  off-arity argument list keep the whole tag verbatim so emit stays
+  byte-stable.
+* Every other tag — `\t(...)` transforms whose parenthesised argument
+  carries nested backslash modifiers, fades, clips,
   drawing-mode `\p` — is preserved verbatim as `AssTag::Other`, and
   non-tag text inside a block becomes `AssTag::Comment`, so
   `emit(&tokenize(s)) == s` byte-for-byte on every input (unterminated
@@ -134,8 +156,9 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   accessor) — `\n` breaks only in wrap mode 2 and is a regular space
   otherwise, `\N` always breaks, `\h` becomes U+00A0.
 
-Typed coverage of the remaining tag set (positioning, karaoke) is the
-chain's next material.
+Typed coverage of the remaining tag set (`\t` transforms,
+`\fad` / `\fade`, `\clip`, font metrics, rotation) is the chain's next
+material.
 
 ## ASS / SSA `[Script Info]` typed accessor
 
