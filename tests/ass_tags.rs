@@ -3,7 +3,8 @@
 //! `WrapStyle` from the previous step.
 
 use oxideav_subtitle::ass_tags::{
-    decode_alpha_hex, decode_bgr_hex, emit, legacy_align_to_numpad, plain_text, tokenize,
+    decode_alpha_hex, decode_bgr_hex, decode_decimal, emit, legacy_align_to_numpad, plain_text,
+    tokenize, AssRotationAxis,
 };
 use oxideav_subtitle::{AssColorTarget, AssKaraokeKind, AssTag, AssToken, WrapStyle};
 
@@ -138,5 +139,137 @@ fn plain_text_extraction_honours_script_wrap_style() {
     assert_eq!(
         plain_text(&tokens, Some(WrapStyle::None)),
         "Line one\nline two\nline three"
+    );
+}
+
+#[test]
+fn font_metric_and_rotation_family_round_trips_typed() {
+    // A typesetting block exercising the whole \f* family: font name
+    // (with a space), fractional size, per-axis scale above 100%,
+    // negative spacing, charset, and rotation on each axis plus the
+    // bare \fr (= \frz) spelling.
+    let text = "{\\fnCourier New\\fs28.5\\fscx200\\fscy150\\fsp-2\\fe1\
+                \\frx10\\fry-20\\frz-30.5\\fr45}text";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text, "font family block must round-trip");
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![
+            AssTag::FontName(Some("Courier New".into())),
+            AssTag::FontSize(Some("28.5".into())),
+            AssTag::FontScale {
+                x_axis: true,
+                percent: Some("200".into()),
+            },
+            AssTag::FontScale {
+                x_axis: false,
+                percent: Some("150".into()),
+            },
+            AssTag::FontSpacing(Some("-2".into())),
+            AssTag::FontEncoding(Some("1".into())),
+            AssTag::Rotation {
+                axis: AssRotationAxis::X,
+                bare: false,
+                degrees: Some("10".into()),
+            },
+            AssTag::Rotation {
+                axis: AssRotationAxis::Y,
+                bare: false,
+                degrees: Some("-20".into()),
+            },
+            AssTag::Rotation {
+                axis: AssRotationAxis::Z,
+                bare: false,
+                degrees: Some("-30.5".into()),
+            },
+            // bare \fr is \frz with bare:true so emit stays byte-stable.
+            AssTag::Rotation {
+                axis: AssRotationAxis::Z,
+                bare: true,
+                degrees: Some("45".into()),
+            },
+        ])
+    );
+    // Decoders turn the verbatim runs into numbers.
+    assert_eq!(decode_decimal("28.5"), Some(28.5));
+    assert_eq!(decode_decimal("-30.5"), Some(-30.5));
+    assert_eq!(decode_decimal("200"), Some(200.0));
+}
+
+#[test]
+fn font_metric_reset_forms_are_typed_none() {
+    // Parameterless \f* tags are the documented reset-to-style shape.
+    let text = "{\\fn\\fs\\fscx\\fscy\\fsp\\fe\\frx\\fry\\frz\\fr}t";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text);
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![
+            AssTag::FontName(None),
+            AssTag::FontSize(None),
+            AssTag::FontScale {
+                x_axis: true,
+                percent: None,
+            },
+            AssTag::FontScale {
+                x_axis: false,
+                percent: None,
+            },
+            AssTag::FontSpacing(None),
+            AssTag::FontEncoding(None),
+            AssTag::Rotation {
+                axis: AssRotationAxis::X,
+                bare: false,
+                degrees: None,
+            },
+            AssTag::Rotation {
+                axis: AssRotationAxis::Y,
+                bare: false,
+                degrees: None,
+            },
+            AssTag::Rotation {
+                axis: AssRotationAxis::Z,
+                bare: false,
+                degrees: None,
+            },
+            AssTag::Rotation {
+                axis: AssRotationAxis::Z,
+                bare: true,
+                degrees: None,
+            },
+        ])
+    );
+}
+
+#[test]
+fn off_shape_font_params_stay_verbatim() {
+    // Non-canonical numeric spellings the typed layer must not absorb,
+    // each staying an untyped Other so emit is byte-stable: a `+`
+    // sign, a trailing dot, a bare dot, a `%` the spec doesn't use, an
+    // embedded space, and the prefix-cousins \be / \blur / \bord that
+    // begin with letters \fs etc. must not swallow.
+    for body in [
+        "fs+12",
+        "fs12.",
+        "fsp.",
+        "fscx1.2.3",
+        "frz9 0",
+        "fs1%",
+        "fe0x10",
+    ] {
+        let text = format!("{{\\{body}}}x");
+        let tokens = tokenize(&text);
+        assert_eq!(emit(&tokens), text, "{body} must round-trip verbatim");
+        assert_eq!(
+            tokens[0],
+            AssToken::Override(vec![AssTag::Other(body.into())]),
+            "{body} must stay an untyped Other"
+        );
+    }
+    // \fade / \fad are function tags, not the \fs* family — verbatim.
+    let fade = "{\\fad(200,200)}x";
+    assert_eq!(
+        tokenize(fade)[0],
+        AssToken::Override(vec![AssTag::Other("fad(200,200)".into())])
     );
 }

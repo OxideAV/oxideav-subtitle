@@ -144,6 +144,23 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   typed — embedded spaces, leading zeroes, a `+` sign, `-0`, or an
   off-arity argument list keep the whole tag verbatim so emit stays
   byte-stable.
+* The font-metric / rotation family is typed: `\fn` (`FontName`,
+  arbitrary verbatim string — font names carry spaces, e.g.
+  `\fnCourier New`), `\fs` (`FontSize`), `\fscx` / `\fscy`
+  (`FontScale { x_axis }`), `\fsp` (`FontSpacing`), `\fe`
+  (`FontEncoding`), and `\frx` / `\fry` / `\frz` plus the bare `\fr`
+  ("defaults to `\frz`", kept distinct via `bare` so emit is
+  byte-stable) as `Rotation { axis, bare }`. The numeric runs are kept
+  verbatim as strings — sizes / scales / spacings / angles are commonly
+  fractional or negative (`\fs28.5`, `\fscx200`, `\fsp-2`, `\frz-30.5`)
+  — and `decode_decimal` turns one into an `f64`. Only a canonical
+  decimal (optional `-`, digits, at most one interior `.`) is typed; a
+  `+` sign, a bare or trailing `.`, an embedded space, a `%`, or a
+  digit-grouping cousin keeps the whole tag verbatim. The exact-prefix
+  match means `\fad` / `\fade` / `\be` / `\blur` / `\bord` can't be
+  mistaken for `\fs*` / `\fr*` forms, and `\fsc*` / `\fsp` are matched
+  ahead of the shorter `\fs`. Parameterless `\fn` … `\fr` are the
+  reset-to-style shape (`None`).
 * Every other tag — `\t(...)` transforms whose parenthesised argument
   carries nested backslash modifiers, fades, clips,
   drawing-mode `\p` — is preserved verbatim as `AssTag::Other`, and
@@ -157,8 +174,9 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   otherwise, `\N` always breaks, `\h` becomes U+00A0.
 
 Typed coverage of the remaining tag set (`\t` transforms,
-`\fad` / `\fade`, `\clip`, font metrics, rotation) is the chain's next
-material.
+`\fad` / `\fade`, `\clip`, and the border / shadow / blur metrics
+`\bord` / `\xbord` / `\ybord`, `\shad` / `\xshad` / `\yshad`,
+`\be` / `\blur`) is the chain's next material.
 
 ## ASS / SSA `[Script Info]` typed accessor
 

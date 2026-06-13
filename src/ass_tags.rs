@@ -34,13 +34,15 @@
 //! `\u`, `\s` — the ones the IR `Segment` tree can model), the
 //! colour / alpha family (`\c`, `\1c`–`\4c`, `\alpha`, `\1a`–`\4a`),
 //! the two alignment tags (`\an` numpad, `\a` legacy), the karaoke
-//! family (`\k`, `\K`, `\kf`, `\ko`), and the three line-positioning
-//! functions (`\pos`, `\move`, `\org`).
+//! family (`\k`, `\K`, `\kf`, `\ko`), the three line-positioning
+//! functions (`\pos`, `\move`, `\org`), and the font-metric / rotation
+//! family (`\fn`, `\fs`, `\fscx` / `\fscy`, `\fsp`, `\fe`, and
+//! `\frx` / `\fry` / `\frz` plus the bare `\fr`).
 //! Every other tag is preserved verbatim in [`AssTag::Other`], so
 //! [`emit`] reproduces the original text byte-for-byte and no
 //! information is dropped. Typed coverage of the remaining tag set
-//! (`\t` transforms, `\fad` / `\fade`, `\clip`, font metrics,
-//! rotation, …) is follow-up material.
+//! (`\t` transforms, `\fad` / `\fade`, `\clip`, border / shadow /
+//! blur metrics, …) is follow-up material.
 
 use crate::ass_script_info::WrapStyle;
 
@@ -111,6 +113,24 @@ pub enum AssKaraokeKind {
     /// border/outline of the syllable is removed, and appears
     /// instantly when the syllable starts."
     Outline,
+}
+
+/// Which axis a `\fr`-family rotation override turns around.
+///
+/// Per the SSA spec's Appendix A, `\fr[<x/y/z>]<degrees>` "sets the
+/// rotation angle around the x/y/z axis", and bare "`\fr` defaults to
+/// `\frz`". The three explicit spellings are kept distinct from the
+/// bare default-Z spelling (carried by [`AssTag::Rotation::bare`]) so
+/// [`emit`] stays byte-stable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssRotationAxis {
+    /// `\frx` — rotation around the X axis.
+    X,
+    /// `\fry` — rotation around the Y axis.
+    Y,
+    /// `\frz` (and the bare `\fr`, which "defaults to `\frz`") —
+    /// rotation around the Z axis.
+    Z,
 }
 
 /// One tag inside an override block.
@@ -234,6 +254,61 @@ pub enum AssTag {
         x: i32,
         /// Origin Y in script-resolution pixels.
         y: i32,
+    },
+    /// `\fn<font name>` — font family override. Per the SSA spec's
+    /// Appendix A: "`<font name>` specifies a font which you have
+    /// installed… This is case sensitive." The parameter is an
+    /// arbitrary verbatim string (font names can carry spaces, e.g.
+    /// `\fnCourier New`), kept exactly as written so [`emit`] is
+    /// byte-stable. `None` is the parameterless `\fn` reset-to-style
+    /// form ("Any style modifier followed by no recognizable parameter
+    /// resets to the default").
+    FontName(Option<String>),
+    /// `\fs<font size>` — font point size. "`<font size>` is a number
+    /// specifying a font point size." The verbatim digit/decimal run is
+    /// preserved as a string (sizes are commonly fractional, e.g.
+    /// `\fs28.5`) so emit stays byte-stable; decode it with
+    /// [`decode_decimal`]. `None` is the parameterless reset-to-style
+    /// form.
+    FontSize(Option<String>),
+    /// `\fscx<percent>` / `\fscy<percent>` — per-axis font scale.
+    /// "`<x or y>` x scales horizontally, y scales vertically." The
+    /// verbatim percent run is preserved (scale is commonly fractional
+    /// or above 100, e.g. `\fscx200`); decode with [`decode_decimal`].
+    /// `None` is the parameterless reset-to-style form.
+    FontScale {
+        /// `true` for `\fscx` (horizontal), `false` for `\fscy`
+        /// (vertical).
+        x_axis: bool,
+        /// Verbatim percent run, or `None` for the reset form.
+        percent: Option<String>,
+    },
+    /// `\fsp<pixels>` — letter spacing. "`<pixels>` changes the distance
+    /// between letters. (default: 0)." The verbatim run is preserved
+    /// (spacing may be fractional or negative, e.g. `\fsp-2`); decode
+    /// with [`decode_decimal`]. `None` is the parameterless
+    /// reset-to-style form.
+    FontSpacing(Option<String>),
+    /// `\fe<charset>` — font encoding / character set. "`<charset>` is a
+    /// number specifying the character set (font encoding)." The
+    /// verbatim digit run is preserved; `None` is the parameterless
+    /// reset-to-style form.
+    FontEncoding(Option<String>),
+    /// `\fr[<x/y/z>]<degrees>` — rotation. "`<degrees>` sets the
+    /// rotation angle around the x/y/z axis. `\fr` defaults to `\frz`."
+    /// The verbatim degrees run is preserved (angles are commonly
+    /// fractional or negative, e.g. `\frz-30.5`); decode with
+    /// [`decode_decimal`]. `degrees: None` is the parameterless
+    /// reset-to-style form. `bare` records the `\fr`-is-`\frz`
+    /// abbreviation so emit stays byte-stable; it is only ever set with
+    /// [`AssRotationAxis::Z`].
+    Rotation {
+        /// Which axis the rotation turns around.
+        axis: AssRotationAxis,
+        /// `true` when written bare `\fr` rather than `\frz`.
+        bare: bool,
+        /// Verbatim degrees run, or `None` for the reset form.
+        degrees: Option<String>,
     },
     /// Any other tag, kept verbatim — the full body after the
     /// backslash, including parenthesised parameter lists
@@ -363,6 +438,9 @@ fn classify(tag: &str) -> AssTag {
         return typed;
     }
     if let Some(typed) = classify_position_karaoke(tag) {
+        return typed;
+    }
+    if let Some(typed) = classify_font(tag) {
         return typed;
     }
     let (head, arg) = match tag.chars().next() {
@@ -519,6 +597,92 @@ fn classify_position_karaoke(tag: &str) -> Option<AssTag> {
     })
 }
 
+/// Try the font-metric / rotation tag family: `\fn`, `\fs`, `\fscx`,
+/// `\fscy`, `\fsp`, `\fe`, `\frx` / `\fry` / `\frz`, and bare `\fr`
+/// (which "defaults to `\frz`").
+///
+/// `\fn`'s parameter is an arbitrary verbatim string (font names carry
+/// spaces); the others take a canonical decimal run validated by
+/// [`canon_decimal`] so a spelling that wouldn't re-emit identically
+/// (embedded space, `+` sign, a `%` the spec doesn't use, a trailing
+/// `.`) stays an untyped [`AssTag::Other`] and [`emit`] is byte-stable.
+/// The empty parameter is the documented reset-to-style form in every
+/// case.
+///
+/// Order matters: `\fsc*` and `\fsp` are checked before `\fs`, and the
+/// axis-suffixed `\fr*` before bare `\fr`, because the shorter name is
+/// a prefix of the longer.
+fn classify_font(tag: &str) -> Option<AssTag> {
+    if let Some(rest) = tag.strip_prefix("fn") {
+        // Font name: arbitrary verbatim string, empty = reset.
+        return Some(AssTag::FontName(
+            (!rest.is_empty()).then(|| rest.to_string()),
+        ));
+    }
+    if let Some(rest) = tag.strip_prefix("fscx") {
+        return Some(AssTag::FontScale {
+            x_axis: true,
+            percent: canon_decimal_opt(rest)?,
+        });
+    }
+    if let Some(rest) = tag.strip_prefix("fscy") {
+        return Some(AssTag::FontScale {
+            x_axis: false,
+            percent: canon_decimal_opt(rest)?,
+        });
+    }
+    if let Some(rest) = tag.strip_prefix("fsp") {
+        return Some(AssTag::FontSpacing(canon_decimal_opt(rest)?));
+    }
+    if let Some(rest) = tag.strip_prefix("fs") {
+        return Some(AssTag::FontSize(canon_decimal_opt(rest)?));
+    }
+    if let Some(rest) = tag.strip_prefix("fe") {
+        return Some(AssTag::FontEncoding(canon_decimal_opt(rest)?));
+    }
+    if let Some(rest) = tag.strip_prefix("frx") {
+        return Some(AssTag::Rotation {
+            axis: AssRotationAxis::X,
+            bare: false,
+            degrees: canon_decimal_opt(rest)?,
+        });
+    }
+    if let Some(rest) = tag.strip_prefix("fry") {
+        return Some(AssTag::Rotation {
+            axis: AssRotationAxis::Y,
+            bare: false,
+            degrees: canon_decimal_opt(rest)?,
+        });
+    }
+    if let Some(rest) = tag.strip_prefix("frz") {
+        return Some(AssTag::Rotation {
+            axis: AssRotationAxis::Z,
+            bare: false,
+            degrees: canon_decimal_opt(rest)?,
+        });
+    }
+    if let Some(rest) = tag.strip_prefix("fr") {
+        return Some(AssTag::Rotation {
+            axis: AssRotationAxis::Z,
+            bare: true,
+            degrees: canon_decimal_opt(rest)?,
+        });
+    }
+    None
+}
+
+/// Match a font-metric tag's numeric parameter. `""` is the
+/// parameterless reset form (`Some(None)`); a canonically-spelled
+/// decimal run (per [`canon_decimal`]) yields the verbatim string
+/// (`Some(Some(_))`); any other shape is `None` and the whole tag stays
+/// an untyped [`AssTag::Other`].
+fn canon_decimal_opt(rest: &str) -> Option<Option<String>> {
+    if rest.is_empty() {
+        return Some(None);
+    }
+    canon_decimal(rest).then(|| Some(rest.to_string()))
+}
+
 /// `<name>(<args>)` with nothing after the closing parenthesis →
 /// the raw argument list.
 fn paren_args<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
@@ -545,6 +709,51 @@ fn canon_u32(s: &str) -> Option<u32> {
 fn canon_u8(s: &str) -> Option<u8> {
     let v: u8 = s.parse().ok()?;
     (v.to_string() == s).then_some(v)
+}
+
+/// Is `s` a canonically-spelled decimal number — an optional leading
+/// `-`, then ASCII digits with at most one `.` that has a digit on
+/// either side?
+///
+/// Font-metric parameters (`\fs`, `\fsc*`, `\fsp`, `\fr*`) are commonly
+/// fractional or negative, so unlike the integer-only positioning
+/// tags they accept a decimal point. The typed layer still rejects any
+/// spelling [`decode_decimal`] couldn't reproduce — a `+` sign, a bare
+/// or trailing `.`, an embedded space, a `%` the spec doesn't use, or
+/// a digit-grouping separator — so those stay verbatim untyped and
+/// [`emit`] is byte-stable.
+fn canon_decimal(s: &str) -> bool {
+    let body = s.strip_prefix('-').unwrap_or(s);
+    if body.is_empty() {
+        return false;
+    }
+    let mut seen_dot = false;
+    let mut prev_digit = false;
+    let bytes = body.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'0'..=b'9' => prev_digit = true,
+            b'.' => {
+                // One dot only, with a digit before and after.
+                if seen_dot || !prev_digit || i + 1 >= bytes.len() {
+                    return false;
+                }
+                seen_dot = true;
+                prev_digit = false;
+            }
+            _ => return false,
+        }
+    }
+    // `-0`, `-0.0` etc. are accepted: they re-emit verbatim, which is
+    // all the byte-stability contract requires.
+    true
+}
+
+/// Decode a font-metric parameter run (`\fs`, `\fsc*`, `\fsp`, `\fr*`
+/// degrees) into an `f64`. Returns `None` for the empty / reset run or
+/// any spelling outside [`canon_decimal`].
+pub fn decode_decimal(s: &str) -> Option<f64> {
+    canon_decimal(s).then(|| s.parse().ok()).flatten()
 }
 
 /// Map a legacy `\a` alignment value to the equivalent `\an` numpad
@@ -681,6 +890,53 @@ pub fn emit(tokens: &[AssToken]) -> String {
                         }
                         AssTag::Org { x, y } => {
                             out.push_str(&format!("\\org({x},{y})"));
+                        }
+                        AssTag::FontName(name) => {
+                            out.push_str("\\fn");
+                            if let Some(n) = name {
+                                out.push_str(n);
+                            }
+                        }
+                        AssTag::FontSize(v) => {
+                            out.push_str("\\fs");
+                            if let Some(v) = v {
+                                out.push_str(v);
+                            }
+                        }
+                        AssTag::FontScale { x_axis, percent } => {
+                            out.push_str(if *x_axis { "\\fscx" } else { "\\fscy" });
+                            if let Some(p) = percent {
+                                out.push_str(p);
+                            }
+                        }
+                        AssTag::FontSpacing(v) => {
+                            out.push_str("\\fsp");
+                            if let Some(v) = v {
+                                out.push_str(v);
+                            }
+                        }
+                        AssTag::FontEncoding(v) => {
+                            out.push_str("\\fe");
+                            if let Some(v) = v {
+                                out.push_str(v);
+                            }
+                        }
+                        AssTag::Rotation {
+                            axis,
+                            bare,
+                            degrees,
+                        } => {
+                            out.push_str("\\fr");
+                            if !*bare {
+                                out.push(match axis {
+                                    AssRotationAxis::X => 'x',
+                                    AssRotationAxis::Y => 'y',
+                                    AssRotationAxis::Z => 'z',
+                                });
+                            }
+                            if let Some(d) = degrees {
+                                out.push_str(d);
+                            }
                         }
                         AssTag::Move {
                             x1,
@@ -913,17 +1169,78 @@ mod tests {
     }
 
     #[test]
-    fn font_tags_stay_verbatim_next_to_typed_position() {
+    fn font_tags_type_next_to_typed_position() {
         let s = "{\\pos(320,240)\\fnCourier New\\fs28}x";
         assert_eq!(
             tokenize(s)[0],
             AssToken::Override(vec![
                 AssTag::Pos { x: 320, y: 240 },
-                AssTag::Other("fnCourier New".into()),
-                AssTag::Other("fs28".into()),
+                AssTag::FontName(Some("Courier New".into())),
+                AssTag::FontSize(Some("28".into())),
             ])
         );
         roundtrip(s);
+    }
+
+    #[test]
+    fn font_scale_and_spacing_axes_type() {
+        assert_eq!(
+            tokenize("{\\fscx120}")[0],
+            AssToken::Override(vec![AssTag::FontScale {
+                x_axis: true,
+                percent: Some("120".into()),
+            }])
+        );
+        assert_eq!(
+            tokenize("{\\fscy80}")[0],
+            AssToken::Override(vec![AssTag::FontScale {
+                x_axis: false,
+                percent: Some("80".into()),
+            }])
+        );
+        // \fsp must not be mistaken for \fs (the shorter prefix).
+        assert_eq!(
+            tokenize("{\\fsp3}")[0],
+            AssToken::Override(vec![AssTag::FontSpacing(Some("3".into()))])
+        );
+        roundtrip("{\\fscx120\\fscy80\\fsp3}");
+    }
+
+    #[test]
+    fn rotation_axis_spellings_distinct_from_bare() {
+        // \frz and bare \fr are both Z but kept distinct so emit is
+        // byte-stable.
+        assert_eq!(
+            tokenize("{\\frz30}")[0],
+            AssToken::Override(vec![AssTag::Rotation {
+                axis: AssRotationAxis::Z,
+                bare: false,
+                degrees: Some("30".into()),
+            }])
+        );
+        assert_eq!(
+            tokenize("{\\fr30}")[0],
+            AssToken::Override(vec![AssTag::Rotation {
+                axis: AssRotationAxis::Z,
+                bare: true,
+                degrees: Some("30".into()),
+            }])
+        );
+        roundtrip("{\\frx10\\fry20\\frz30\\fr40}");
+    }
+
+    #[test]
+    fn font_prefix_cousins_not_swallowed() {
+        // \fad / \fade are function tags; \be / \blur / \bord begin
+        // with letters the \f* family must not absorb.
+        for body in ["fad(1,2)", "fade(1,2,3,4,5,6,7)", "be2", "blur3", "bord2"] {
+            let s = format!("{{\\{body}}}");
+            assert_eq!(
+                tokenize(&s)[0],
+                AssToken::Override(vec![AssTag::Other(body.into())]),
+                "{body} must stay verbatim"
+            );
+        }
     }
 
     #[test]

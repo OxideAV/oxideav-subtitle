@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA typed font-metric and rotation override tags in `ass_tags`.
+  `\fn` parses to `AssTag::FontName` (an arbitrary verbatim string, so
+  font names with spaces like `\fnCourier New` round-trip), `\fs` to
+  `AssTag::FontSize`, `\fscx` / `\fscy` to `AssTag::FontScale { x_axis }`,
+  `\fsp` to `AssTag::FontSpacing`, `\fe` to `AssTag::FontEncoding`, and
+  `\frx` / `\fry` / `\frz` plus the bare `\fr` (which "defaults to
+  `\frz`", kept distinct via a `bare` flag) to
+  `AssTag::Rotation { axis, bare }` over the new `AssRotationAxis` enum
+  (re-exported at the crate root). The numeric runs are preserved
+  verbatim as strings — sizes, scales, spacings, and angles are commonly
+  fractional or negative — and the new `decode_decimal` turns one into
+  an `f64`. Only a canonically-spelled decimal (optional `-`, ASCII
+  digits, at most one interior `.`) is typed; a `+` sign, a bare or
+  trailing `.`, an embedded space, a `%`, or a digit-grouping cousin
+  keeps the whole tag verbatim `AssTag::Other`, and exact-prefix
+  matching (with `\fsc*` / `\fsp` checked ahead of the shorter `\fs`)
+  means `\fad` / `\fade` / `\be` / `\blur` / `\bord` are never
+  mis-typed. Parameterless `\fn` … `\fr` are the documented
+  reset-to-style shape (`None`). `emit` stays byte-stable for every
+  input.
 - ASS / SSA typed alignment, karaoke, and positioning override tags in
   `ass_tags`. `\an1`–`\an9` parse to `AssTag::AlignNumpad` and legacy
   `\a` to `AssTag::AlignLegacy` over the documented value set (1–3,
