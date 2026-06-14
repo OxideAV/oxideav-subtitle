@@ -6,7 +6,9 @@ use oxideav_subtitle::ass_tags::{
     decode_alpha_hex, decode_bgr_hex, decode_decimal, emit, legacy_align_to_numpad, plain_text,
     tokenize, AssRotationAxis,
 };
-use oxideav_subtitle::{AssColorTarget, AssKaraokeKind, AssTag, AssToken, WrapStyle};
+use oxideav_subtitle::{
+    AssBorderAxis, AssColorTarget, AssKaraokeKind, AssTag, AssToken, WrapStyle,
+};
 
 #[test]
 fn realistic_dialogue_text_round_trips_byte_stable() {
@@ -271,5 +273,119 @@ fn off_shape_font_params_stay_verbatim() {
     assert_eq!(
         tokenize(fade)[0],
         AssToken::Override(vec![AssTag::Other("fad(200,200)".into())])
+    );
+}
+
+#[test]
+fn border_and_shadow_family_round_trips_typed() {
+    // The full \bord / \shad family: combined width + depth, per-axis
+    // split, fractional values, and the per-axis shadow's negative depth
+    // ("unlike \shad, you can set the distance negative with these
+    // tags").
+    let text = "{\\bord3.7\\xbord2\\ybord0\\shad4\\xshad-3\\yshad1.5}text";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text, "border/shadow block must round-trip");
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![
+            AssTag::Border {
+                axis: AssBorderAxis::Both,
+                size: Some("3.7".into()),
+            },
+            AssTag::Border {
+                axis: AssBorderAxis::X,
+                size: Some("2".into()),
+            },
+            AssTag::Border {
+                axis: AssBorderAxis::Y,
+                size: Some("0".into()),
+            },
+            AssTag::Shadow {
+                axis: AssBorderAxis::Both,
+                depth: Some("4".into()),
+            },
+            AssTag::Shadow {
+                axis: AssBorderAxis::X,
+                depth: Some("-3".into()),
+            },
+            AssTag::Shadow {
+                axis: AssBorderAxis::Y,
+                depth: Some("1.5".into()),
+            },
+        ])
+    );
+    // Verbatim runs decode to numbers.
+    assert_eq!(decode_decimal("3.7"), Some(3.7));
+    assert_eq!(decode_decimal("-3"), Some(-3.0));
+}
+
+#[test]
+fn border_shadow_reset_forms_are_typed_none() {
+    // Parameterless forms are the documented reset-to-style shape.
+    let text = "{\\bord\\xbord\\ybord\\shad\\xshad\\yshad}t";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text);
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![
+            AssTag::Border {
+                axis: AssBorderAxis::Both,
+                size: None,
+            },
+            AssTag::Border {
+                axis: AssBorderAxis::X,
+                size: None,
+            },
+            AssTag::Border {
+                axis: AssBorderAxis::Y,
+                size: None,
+            },
+            AssTag::Shadow {
+                axis: AssBorderAxis::Both,
+                depth: None,
+            },
+            AssTag::Shadow {
+                axis: AssBorderAxis::X,
+                depth: None,
+            },
+            AssTag::Shadow {
+                axis: AssBorderAxis::Y,
+                depth: None,
+            },
+        ])
+    );
+}
+
+#[test]
+fn negative_combined_border_shadow_stays_verbatim() {
+    // The spec bars a negative width on \bord and a negative depth on
+    // the combined \shad ("Border width cannot be negative"; the \shad
+    // "distance can not be negative with this tag"), so a signed value
+    // there stays an untyped Other and emit is byte-stable. The per-axis
+    // \xshad / \yshad, by contrast, DO accept a negative (covered
+    // above).
+    for body in ["bord-1", "xbord-1", "ybord-2.5", "shad-1"] {
+        let text = format!("{{\\{body}}}x");
+        let tokens = tokenize(&text);
+        assert_eq!(emit(&tokens), text, "{body} must round-trip verbatim");
+        assert_eq!(
+            tokens[0],
+            AssToken::Override(vec![AssTag::Other(body.into())]),
+            "{body} must stay an untyped Other"
+        );
+    }
+    // The \b / \s style toggles and the \be blur-edges cousin must not
+    // be swallowed by the border/shadow family.
+    assert_eq!(
+        tokenize("{\\b1}x")[0],
+        AssToken::Override(vec![AssTag::Bold(Some(1))])
+    );
+    assert_eq!(
+        tokenize("{\\s0}x")[0],
+        AssToken::Override(vec![AssTag::Strikeout(Some(false))])
+    );
+    assert_eq!(
+        tokenize("{\\be1}x")[0],
+        AssToken::Override(vec![AssTag::Other("be1".into())])
     );
 }

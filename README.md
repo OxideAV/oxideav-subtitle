@@ -107,7 +107,8 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   `\i` / `\u` / `\s` (`Option<bool>`, with the parameterless
   reset-to-style form as `None`). The exact-prefix + digits-only match
   means `\bord`, `\be`, `\blur`, `\shad`, and `\iclip` can't be
-  mistaken for flag forms.
+  mistaken for flag forms (`\bord` / `\shad` are typed by the
+  border / shadow family below, not as `\b` / `\s`).
 * The colour / alpha family is typed. `\c` / `\1c`–`\4c&H<bbggrr>&`
   parse to `AssTag::Color { target, short, hex }` — `target` is the
   `AssColorTarget` component (primary / secondary fill, border,
@@ -157,10 +158,29 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   decimal (optional `-`, digits, at most one interior `.`) is typed; a
   `+` sign, a bare or trailing `.`, an embedded space, a `%`, or a
   digit-grouping cousin keeps the whole tag verbatim. The exact-prefix
-  match means `\fad` / `\fade` / `\be` / `\blur` / `\bord` can't be
-  mistaken for `\fs*` / `\fr*` forms, and `\fsc*` / `\fsp` are matched
-  ahead of the shorter `\fs`. Parameterless `\fn` … `\fr` are the
-  reset-to-style shape (`None`).
+  match means `\fad` / `\fade` / `\be` / `\blur` can't be mistaken for
+  `\fs*` / `\fr*` forms, and `\fsc*` / `\fsp` are matched ahead of the
+  shorter `\fs`. Parameterless `\fn` … `\fr` are the reset-to-style
+  shape (`None`).
+* The border / shadow family is typed: `\bord` / `\xbord` / `\ybord`
+  parse to `AssTag::Border { axis, size }` ("Change the width of the
+  border around the text … Set the size to 0 to disable the border
+  entirely", `\xbord` / `\ybord` "set the border size in X and Y
+  direction separately") and `\shad` / `\xshad` / `\yshad` to
+  `AssTag::Shadow { axis, depth }` ("Set the distance from the text to
+  position the shadow"), both over the new `AssBorderAxis`
+  (`Both` / `X` / `Y`, re-exported at the crate root). Widths and depths
+  are kept verbatim as strings — they "can have decimal places"
+  (`\bord3.7`); `decode_decimal` turns one into an `f64`. The spec bars
+  a negative border ("Border width cannot be negative") and a negative
+  combined `\shad` ("distance can not be negative with this tag"), so a
+  `-`-signed value there stays verbatim `AssTag::Other`; the per-axis
+  `\xshad` / `\yshad` accept a negative ("unlike `\shad`, you can set
+  the distance negative … to position the shadow to the top or left").
+  Exact-prefix matching keeps the `\b` / `\s` toggles and the `\be`
+  blur cousin distinct, and the axis-prefixed `\xbord` … `\yshad` are
+  checked ahead of the combined forms. Parameterless `\bord` … `\yshad`
+  are the reset-to-style shape (`None`).
 * Every other tag — `\t(...)` transforms whose parenthesised argument
   carries nested backslash modifiers, fades, clips,
   drawing-mode `\p` — is preserved verbatim as `AssTag::Other`, and
@@ -174,8 +194,7 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   otherwise, `\N` always breaks, `\h` becomes U+00A0.
 
 Typed coverage of the remaining tag set (`\t` transforms,
-`\fad` / `\fade`, `\clip`, and the border / shadow / blur metrics
-`\bord` / `\xbord` / `\ybord`, `\shad` / `\xshad` / `\yshad`,
+`\fad` / `\fade`, `\clip` / `\iclip`, and the blur metrics
 `\be` / `\blur`) is the chain's next material.
 
 ## ASS / SSA `[Script Info]` typed accessor

@@ -133,6 +133,24 @@ pub enum AssRotationAxis {
     Z,
 }
 
+/// Which axis a `\bord` / `\shad` border or shadow override applies to.
+///
+/// Per the Aegisub override-tag reference, the combined `\bord` /
+/// `\shad` set both axes at once, while `\xbord` / `\ybord` "set the
+/// border size in X and Y direction separately" and `\xshad` / `\yshad`
+/// "set the distance ... with X and Y position set separately". The
+/// per-axis spellings are kept distinct from the combined form (carried
+/// by [`AssBorderAxis::Both`]) so [`emit`] stays byte-stable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssBorderAxis {
+    /// Combined `\bord` / `\shad` — both axes at once.
+    Both,
+    /// `\xbord` / `\xshad` — the X direction only.
+    X,
+    /// `\ybord` / `\yshad` — the Y direction only.
+    Y,
+}
+
 /// One tag inside an override block.
 ///
 /// The typed variants carry the parsed parameter; `None` is the
@@ -310,6 +328,40 @@ pub enum AssTag {
         /// Verbatim degrees run, or `None` for the reset form.
         degrees: Option<String>,
     },
+    /// `\bord<size>` / `\xbord<size>` / `\ybord<size>` — border width.
+    /// The Aegisub reference: "Change the width of the border around the
+    /// text. Set the size to 0 (zero) to disable the border entirely",
+    /// the value "doesn't have to be limited to whole integer pixels and
+    /// can have decimal places", and "Border width cannot be negative".
+    /// `\xbord` / `\ybord` "set the border size in X and Y direction
+    /// separately". The verbatim run is preserved (widths are commonly
+    /// fractional, e.g. `\bord3.7`); decode with [`decode_decimal`].
+    /// Because the spec bars a negative border, a `-`-signed run is left
+    /// untyped as [`AssTag::Other`]. `None` is the parameterless
+    /// reset-to-style form.
+    Border {
+        /// Which axis the width applies to.
+        axis: AssBorderAxis,
+        /// Verbatim non-negative width run, or `None` for the reset form.
+        size: Option<String>,
+    },
+    /// `\shad<depth>` / `\xshad<depth>` / `\yshad<depth>` — shadow
+    /// distance. The Aegisub reference: "Set the distance from the text
+    /// to position the shadow. Set the depth to 0 (zero) to disable
+    /// shadow entirely." The combined `\shad` "distance can not be
+    /// negative with this tag", but for the per-axis forms "unlike
+    /// `\shad`, you can set the distance negative with these tags to
+    /// position the shadow to the top or left of the text". The verbatim
+    /// run is preserved (depths are commonly fractional); decode with
+    /// [`decode_decimal`]. A `-`-signed run is therefore typed only for
+    /// `\xshad` / `\yshad`; a negative `\shad` stays [`AssTag::Other`].
+    /// `None` is the parameterless reset-to-style form.
+    Shadow {
+        /// Which axis the depth applies to.
+        axis: AssBorderAxis,
+        /// Verbatim depth run, or `None` for the reset form.
+        depth: Option<String>,
+    },
     /// Any other tag, kept verbatim — the full body after the
     /// backslash, including parenthesised parameter lists
     /// (`t(0,1000,\fscx200)`, `fad(200,200)`, `1c&HFF&`, …).
@@ -441,6 +493,9 @@ fn classify(tag: &str) -> AssTag {
         return typed;
     }
     if let Some(typed) = classify_font(tag) {
+        return typed;
+    }
+    if let Some(typed) = classify_border_shadow(tag) {
         return typed;
     }
     let (head, arg) = match tag.chars().next() {
@@ -669,6 +724,76 @@ fn classify_font(tag: &str) -> Option<AssTag> {
         });
     }
     None
+}
+
+/// Try the border / shadow tag family: `\bord`, `\xbord`, `\ybord`,
+/// `\shad`, `\xshad`, `\yshad`.
+///
+/// Per the Aegisub reference, border widths "cannot be negative" and
+/// the combined `\shad` "distance can not be negative with this tag",
+/// so those forms only accept a non-negative decimal run
+/// ([`canon_decimal_nonneg_opt`]); a `-`-signed value stays an untyped
+/// [`AssTag::Other`]. The per-axis shadow forms `\xshad` / `\yshad`
+/// "can set the distance negative", so they accept the signed
+/// [`canon_decimal_opt`] run. The empty parameter is the documented
+/// reset-to-style form in every case.
+///
+/// Order matters: the axis-prefixed `\xbord` / `\ybord` /
+/// `\xshad` / `\yshad` must be checked before the bare `\bord` /
+/// `\shad`, because `b`/`s` is not a prefix of `xb`/`xs` but the
+/// `\b`/`\s` style toggles handled by [`classify`] would otherwise be
+/// shadowed — so this family runs first for any `b`/`x`/`y`/`s` lead and
+/// returns `None` (deferring to the toggle path) when nothing matches.
+fn classify_border_shadow(tag: &str) -> Option<AssTag> {
+    if let Some(rest) = tag.strip_prefix("xbord") {
+        return Some(AssTag::Border {
+            axis: AssBorderAxis::X,
+            size: canon_decimal_nonneg_opt(rest)?,
+        });
+    }
+    if let Some(rest) = tag.strip_prefix("ybord") {
+        return Some(AssTag::Border {
+            axis: AssBorderAxis::Y,
+            size: canon_decimal_nonneg_opt(rest)?,
+        });
+    }
+    if let Some(rest) = tag.strip_prefix("bord") {
+        return Some(AssTag::Border {
+            axis: AssBorderAxis::Both,
+            size: canon_decimal_nonneg_opt(rest)?,
+        });
+    }
+    if let Some(rest) = tag.strip_prefix("xshad") {
+        return Some(AssTag::Shadow {
+            axis: AssBorderAxis::X,
+            depth: canon_decimal_opt(rest)?,
+        });
+    }
+    if let Some(rest) = tag.strip_prefix("yshad") {
+        return Some(AssTag::Shadow {
+            axis: AssBorderAxis::Y,
+            depth: canon_decimal_opt(rest)?,
+        });
+    }
+    if let Some(rest) = tag.strip_prefix("shad") {
+        return Some(AssTag::Shadow {
+            axis: AssBorderAxis::Both,
+            depth: canon_decimal_nonneg_opt(rest)?,
+        });
+    }
+    None
+}
+
+/// [`canon_decimal_opt`] restricted to a non-negative run: the empty
+/// reset form, or a [`canon_decimal`] run with no leading `-`. Used by
+/// the `\bord` family and the combined `\shad`, which the spec forbids
+/// from being negative — a `-`-signed value re-emits verbatim as an
+/// untyped [`AssTag::Other`].
+fn canon_decimal_nonneg_opt(rest: &str) -> Option<Option<String>> {
+    if rest.is_empty() {
+        return Some(None);
+    }
+    (!rest.starts_with('-') && canon_decimal(rest)).then(|| Some(rest.to_string()))
 }
 
 /// Match a font-metric tag's numeric parameter. `""` is the
@@ -938,6 +1063,30 @@ pub fn emit(tokens: &[AssToken]) -> String {
                                 out.push_str(d);
                             }
                         }
+                        AssTag::Border { axis, size } => {
+                            out.push('\\');
+                            match axis {
+                                AssBorderAxis::Both => {}
+                                AssBorderAxis::X => out.push('x'),
+                                AssBorderAxis::Y => out.push('y'),
+                            }
+                            out.push_str("bord");
+                            if let Some(s) = size {
+                                out.push_str(s);
+                            }
+                        }
+                        AssTag::Shadow { axis, depth } => {
+                            out.push('\\');
+                            match axis {
+                                AssBorderAxis::Both => {}
+                                AssBorderAxis::X => out.push('x'),
+                                AssBorderAxis::Y => out.push('y'),
+                            }
+                            out.push_str("shad");
+                            if let Some(d) = depth {
+                                out.push_str(d);
+                            }
+                        }
                         AssTag::Move {
                             x1,
                             y1,
@@ -1112,13 +1261,11 @@ mod tests {
 
     #[test]
     fn longer_tags_sharing_a_flag_prefix_stay_other() {
-        // \bord, \be, \blur, \shad, \iclip must not be mistaken for
-        // \b / \s / \i numeric forms.
+        // \be, \blur, \iclip must not be mistaken for \b / \s / \i
+        // numeric forms; they have no typed variant yet so stay Other.
         for (s, body) in [
-            ("{\\bord3.7}", "bord3.7"),
             ("{\\be1}", "be1"),
             ("{\\blur2}", "blur2"),
-            ("{\\shad2}", "shad2"),
             ("{\\iclip(0,0,100,100)}", "iclip(0,0,100,100)"),
         ] {
             assert_eq!(
@@ -1128,6 +1275,24 @@ mod tests {
             );
             roundtrip(s);
         }
+        // \bord / \shad share the \b / \s prefix but are the typed
+        // border / shadow family, not the flag toggles — they must NOT
+        // resolve to Bold / Strikeout.
+        assert_eq!(
+            tokenize("{\\bord3.7}"),
+            vec![AssToken::Override(vec![AssTag::Border {
+                axis: AssBorderAxis::Both,
+                size: Some("3.7".into()),
+            }])]
+        );
+        assert_eq!(
+            tokenize("{\\shad2}"),
+            vec![AssToken::Override(vec![AssTag::Shadow {
+                axis: AssBorderAxis::Both,
+                depth: Some("2".into()),
+            }])]
+        );
+        roundtrip("{\\bord3.7}{\\shad2}");
     }
 
     #[test]
@@ -1231,9 +1396,10 @@ mod tests {
 
     #[test]
     fn font_prefix_cousins_not_swallowed() {
-        // \fad / \fade are function tags; \be / \blur / \bord begin
-        // with letters the \f* family must not absorb.
-        for body in ["fad(1,2)", "fade(1,2,3,4,5,6,7)", "be2", "blur3", "bord2"] {
+        // \fad / \fade are function tags; \be / \blur begin with letters
+        // the \f* family must not absorb. (\bord / \shad are the typed
+        // border / shadow family — see border_shadow tests.)
+        for body in ["fad(1,2)", "fade(1,2,3,4,5,6,7)", "be2", "blur3"] {
             let s = format!("{{\\{body}}}");
             assert_eq!(
                 tokenize(&s)[0],

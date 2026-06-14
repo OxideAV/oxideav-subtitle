@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA typed border and shadow override tags in `ass_tags`.
+  `\bord` / `\xbord` / `\ybord` parse to `AssTag::Border { axis, size }`
+  and `\shad` / `\xshad` / `\yshad` to `AssTag::Shadow { axis, depth }`,
+  both over the new `AssBorderAxis` enum (`Both` / `X` / `Y`,
+  re-exported at the crate root). The width / depth runs are preserved
+  verbatim as strings — they "can have decimal places" (`\bord3.7`) —
+  and `decode_decimal` turns one into an `f64`. Per the Aegisub
+  reference the border "cannot be negative" and the combined `\shad`
+  "distance can not be negative with this tag", so a `-`-signed value
+  there keeps the whole tag verbatim `AssTag::Other`; the per-axis
+  `\xshad` / `\yshad` accept a negative depth ("unlike `\shad`, you can
+  set the distance negative"). The axis-prefixed forms are matched ahead
+  of the combined `\bord` / `\shad`, and exact-prefix matching keeps the
+  `\b` / `\s` style toggles and the `\be` blur cousin distinct.
+  Parameterless `\bord` … `\yshad` are the reset-to-style shape
+  (`None`). `emit` stays byte-stable.
 - ASS / SSA typed font-metric and rotation override tags in `ass_tags`.
   `\fn` parses to `AssTag::FontName` (an arbitrary verbatim string, so
   font names with spaces like `\fnCourier New` round-trip), `\fs` to

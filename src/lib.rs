@@ -80,7 +80,9 @@ use oxideav_core::{CodecCapabilities, CodecId, MediaType};
 use oxideav_core::{CodecInfo, CodecRegistry};
 
 pub use ass_script_info::{script_info, script_info_keys, AssScriptInfo, Collisions, WrapStyle};
-pub use ass_tags::{AssColorTarget, AssKaraokeKind, AssRotationAxis, AssTag, AssToken};
+pub use ass_tags::{
+    AssBorderAxis, AssColorTarget, AssKaraokeKind, AssRotationAxis, AssTag, AssToken,
+};
 pub use compositor::Compositor;
 pub use font::BitmapFont;
 pub use ir::{SourceFormat, SubtitleTrack};
