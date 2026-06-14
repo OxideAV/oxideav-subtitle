@@ -37,12 +37,14 @@
 //! family (`\k`, `\K`, `\kf`, `\ko`), the three line-positioning
 //! functions (`\pos`, `\move`, `\org`), and the font-metric / rotation
 //! family (`\fn`, `\fs`, `\fscx` / `\fscy`, `\fsp`, `\fe`, and
-//! `\frx` / `\fry` / `\frz` plus the bare `\fr`).
+//! `\frx` / `\fry` / `\frz` plus the bare `\fr`), the border / shadow
+//! family (`\bord` / `\xbord` / `\ybord`, `\shad` / `\xshad` /
+//! `\yshad`), and the edge-blur family (`\be` / `\blur`).
 //! Every other tag is preserved verbatim in [`AssTag::Other`], so
 //! [`emit`] reproduces the original text byte-for-byte and no
 //! information is dropped. Typed coverage of the remaining tag set
-//! (`\t` transforms, `\fad` / `\fade`, `\clip`, border / shadow /
-//! blur metrics, …) is follow-up material.
+//! (`\t` transforms, `\fad` / `\fade`, `\clip` / `\iclip`) is
+//! follow-up material.
 
 use crate::ass_script_info::WrapStyle;
 
