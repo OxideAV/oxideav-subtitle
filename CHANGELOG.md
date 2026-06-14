@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA typed edge-blur override tags in `ass_tags`. `\be` and
+  `\blur` parse to `AssTag::Blur { kind, strength }` over the new
+  `AssBlurKind` enum (`Edge` for `\be`, `Gaussian` for `\blur`,
+  re-exported at the crate root). Per the Aegisub reference a `\be`
+  strength "is the number of times to apply the regular effect" and
+  "must be an integer number", so `\be` accepts only a canonical
+  non-negative integer run; `\blur` "uses a more advanced algorithm" and
+  "Unlike `\be`, the strength can be non-integer here", so it accepts a
+  non-negative decimal (`decode_decimal` turns one into an `f64`).
+  Neither strength is meaningfully negative, so a `-`-signed value, a
+  decimal `\be`, a `+` sign, or a leading zero keeps the whole tag
+  verbatim `AssTag::Other` and `emit` stays byte-stable. Parameterless
+  `\be` / `\blur` are the documented reset-to-style form (`None`).
+  `\blur` is matched ahead of `\be`, and both run after the `\bord`
+  family so `\bord` is never mistaken for a `\b` toggle.
 - ASS / SSA typed border and shadow override tags in `ass_tags`.
   `\bord` / `\xbord` / `\ybord` parse to `AssTag::Border { axis, size }`
   and `\shad` / `\xshad` / `\yshad` to `AssTag::Shadow { axis, depth }`,

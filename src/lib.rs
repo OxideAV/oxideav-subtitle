@@ -81,7 +81,7 @@ use oxideav_core::{CodecInfo, CodecRegistry};
 
 pub use ass_script_info::{script_info, script_info_keys, AssScriptInfo, Collisions, WrapStyle};
 pub use ass_tags::{
-    AssBorderAxis, AssColorTarget, AssKaraokeKind, AssRotationAxis, AssTag, AssToken,
+    AssBlurKind, AssBorderAxis, AssColorTarget, AssKaraokeKind, AssRotationAxis, AssTag, AssToken,
 };
 pub use compositor::Compositor;
 pub use font::BitmapFont;

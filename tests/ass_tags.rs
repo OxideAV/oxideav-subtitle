@@ -7,7 +7,7 @@ use oxideav_subtitle::ass_tags::{
     tokenize, AssRotationAxis,
 };
 use oxideav_subtitle::{
-    AssBorderAxis, AssColorTarget, AssKaraokeKind, AssTag, AssToken, WrapStyle,
+    AssBlurKind, AssBorderAxis, AssColorTarget, AssKaraokeKind, AssTag, AssToken, WrapStyle,
 };
 
 #[test]
@@ -374,8 +374,9 @@ fn negative_combined_border_shadow_stays_verbatim() {
             "{body} must stay an untyped Other"
         );
     }
-    // The \b / \s style toggles and the \be blur-edges cousin must not
-    // be swallowed by the border/shadow family.
+    // The \b / \s style toggles must not be swallowed by the
+    // border/shadow family, and the \be blur-edges cousin resolves to
+    // the typed blur family rather than the border/shadow one.
     assert_eq!(
         tokenize("{\\b1}x")[0],
         AssToken::Override(vec![AssTag::Bold(Some(1))])
@@ -386,6 +387,100 @@ fn negative_combined_border_shadow_stays_verbatim() {
     );
     assert_eq!(
         tokenize("{\\be1}x")[0],
-        AssToken::Override(vec![AssTag::Other("be1".into())])
+        AssToken::Override(vec![AssTag::Blur {
+            kind: AssBlurKind::Edge,
+            strength: Some("1".into()),
+        }])
     );
+}
+
+#[test]
+fn blur_family_round_trips_typed() {
+    // The edge-blur family: \be's integer-count softening (the spec's
+    // "\be0" / "\be1" / "\be <strength>" forms — "strength is the number
+    // of times to apply the regular effect … must be an integer number")
+    // and \blur's gaussian variant ("Unlike \be, the strength can be
+    // non-integer here. Set strength to 0 (zero) to disable").
+    let text = "{\\be0}off{\\be3}edge{\\blur0}off{\\blur2.5}gauss";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text, "blur block must round-trip");
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![AssTag::Blur {
+            kind: AssBlurKind::Edge,
+            strength: Some("0".into()),
+        }])
+    );
+    assert_eq!(
+        tokens[2],
+        AssToken::Override(vec![AssTag::Blur {
+            kind: AssBlurKind::Edge,
+            strength: Some("3".into()),
+        }])
+    );
+    assert_eq!(
+        tokens[4],
+        AssToken::Override(vec![AssTag::Blur {
+            kind: AssBlurKind::Gaussian,
+            strength: Some("0".into()),
+        }])
+    );
+    assert_eq!(
+        tokens[6],
+        AssToken::Override(vec![AssTag::Blur {
+            kind: AssBlurKind::Gaussian,
+            strength: Some("2.5".into()),
+        }])
+    );
+    // The \blur strength decodes as a decimal; the \be count is an
+    // integer string.
+    assert_eq!(decode_decimal("2.5"), Some(2.5));
+}
+
+#[test]
+fn blur_reset_forms_are_typed_none() {
+    // Parameterless \be / \blur are the documented reset-to-style shape.
+    let text = "{\\be\\blur}t";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text);
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![
+            AssTag::Blur {
+                kind: AssBlurKind::Edge,
+                strength: None,
+            },
+            AssTag::Blur {
+                kind: AssBlurKind::Gaussian,
+                strength: None,
+            },
+        ])
+    );
+}
+
+#[test]
+fn off_shape_blur_params_stay_verbatim() {
+    // A \be strength "must be an integer number", so a decimal \be stays
+    // an untyped Other; neither blur is meaningfully negative, so a
+    // signed value stays verbatim too. A leading zero / `+` sign / bare
+    // dot also fall through so emit is byte-stable.
+    for body in [
+        "be1.5",  // \be must be an integer
+        "be-1",   // no negative count
+        "be+1",   // no sign
+        "be01",   // no leading zero
+        "blur-2", // no negative strength
+        "blur.",  // bare dot
+        "blur1.", // trailing dot
+        "blur+2", // no sign
+    ] {
+        let text = format!("{{\\{body}}}x");
+        let tokens = tokenize(&text);
+        assert_eq!(emit(&tokens), text, "{body} must round-trip verbatim");
+        assert_eq!(
+            tokens[0],
+            AssToken::Override(vec![AssTag::Other(body.into())]),
+            "{body} must stay an untyped Other"
+        );
+    }
 }

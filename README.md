@@ -181,6 +181,19 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   blur cousin distinct, and the axis-prefixed `\xbord` … `\yshad` are
   checked ahead of the combined forms. Parameterless `\bord` … `\yshad`
   are the reset-to-style shape (`None`).
+* The edge-blur family is typed: `\be` and `\blur` parse to
+  `AssTag::Blur { kind, strength }` over the new `AssBlurKind`
+  (`Edge` / `Gaussian`, re-exported at the crate root). A `\be` strength
+  "is the number of times to apply the regular effect" and "must be an
+  integer number", so it accepts only a canonical non-negative integer
+  run; `\blur` "uses a more advanced algorithm" and "Unlike `\be`, the
+  strength can be non-integer here", so it accepts a non-negative decimal
+  (`decode_decimal` turns one into an `f64`). Neither strength is
+  meaningfully negative — a `-`-signed value, a decimal `\be`, a `+`
+  sign, or a leading zero keeps the whole tag verbatim — and `\blur` is
+  matched ahead of `\be`, both after the `\bord` family so `\bord` is
+  never mistaken for a `\b` toggle. Parameterless `\be` / `\blur` are the
+  reset-to-style shape (`None`).
 * Every other tag — `\t(...)` transforms whose parenthesised argument
   carries nested backslash modifiers, fades, clips,
   drawing-mode `\p` — is preserved verbatim as `AssTag::Other`, and
@@ -194,8 +207,7 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   otherwise, `\N` always breaks, `\h` becomes U+00A0.
 
 Typed coverage of the remaining tag set (`\t` transforms,
-`\fad` / `\fade`, `\clip` / `\iclip`, and the blur metrics
-`\be` / `\blur`) is the chain's next material.
+`\fad` / `\fade`, and `\clip` / `\iclip`) is the chain's next material.
 
 ## ASS / SSA `[Script Info]` typed accessor
 

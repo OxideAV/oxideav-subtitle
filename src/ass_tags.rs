@@ -151,6 +151,22 @@ pub enum AssBorderAxis {
     Y,
 }
 
+/// Which blur algorithm a `\be` / `\blur` override drives.
+///
+/// Per the Aegisub override-tag reference both blur the edges of the
+/// text, but `\be`'s strength "is the number of times to apply the
+/// regular effect" and "must be an integer number", while `\blur` "uses
+/// a more advanced algorithm that looks better at high strengths" and
+/// "Unlike `\be`, the strength can be non-integer here". The two
+/// spellings are kept distinct so [`emit`] stays byte-stable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssBlurKind {
+    /// `\be` — the integer-count edge-softening effect.
+    Edge,
+    /// `\blur` — the gaussian edge blur with a non-integer strength.
+    Gaussian,
+}
+
 /// One tag inside an override block.
 ///
 /// The typed variants carry the parsed parameter; `None` is the
@@ -362,6 +378,29 @@ pub enum AssTag {
         /// Verbatim depth run, or `None` for the reset form.
         depth: Option<String>,
     },
+    /// `\be<strength>` / `\blur<strength>` — edge blur. The Aegisub
+    /// reference: `\be` "Enable or disable a subtle softening-effect for
+    /// the edges of the text … In the extended version, strength is the
+    /// number of times to apply the regular effect … The strength must be
+    /// an integer number." `\blur` "In general, this has the same
+    /// function as the `\be` tag, but uses a more advanced algorithm …
+    /// Unlike `\be`, the strength can be non-integer here. Set strength to
+    /// 0 (zero) to disable the effect."
+    ///
+    /// Both blur the text edges; the distinct algorithms (`\be`'s
+    /// integer-count softening vs `\blur`'s gaussian) are carried by
+    /// [`AssBlurKind`] so [`emit`] stays byte-stable. The verbatim run is
+    /// preserved — a `\be` strength is an integer count and a `\blur`
+    /// strength a non-negative decimal; neither is meaningfully negative,
+    /// so a `-`-signed value stays an untyped [`AssTag::Other`]. Decode a
+    /// `\blur` strength with [`decode_decimal`]. `None` is the
+    /// parameterless reset-to-style form.
+    Blur {
+        /// Which blur algorithm the strength drives.
+        kind: AssBlurKind,
+        /// Verbatim strength run, or `None` for the reset form.
+        strength: Option<String>,
+    },
     /// Any other tag, kept verbatim — the full body after the
     /// backslash, including parenthesised parameter lists
     /// (`t(0,1000,\fscx200)`, `fad(200,200)`, `1c&HFF&`, …).
@@ -496,6 +535,9 @@ fn classify(tag: &str) -> AssTag {
         return typed;
     }
     if let Some(typed) = classify_border_shadow(tag) {
+        return typed;
+    }
+    if let Some(typed) = classify_blur(tag) {
         return typed;
     }
     let (head, arg) = match tag.chars().next() {
@@ -784,6 +826,38 @@ fn classify_border_shadow(tag: &str) -> Option<AssTag> {
     None
 }
 
+/// Try the edge-blur tag family: `\blur` and `\be`.
+///
+/// Per the Aegisub reference a `\be` strength "must be an integer
+/// number" (a non-negative repeat count), so `\be` accepts only a
+/// canonical unsigned-integer run ([`canon_uint_opt`]); a `\blur`
+/// strength "can be non-integer" but is never meaningfully negative, so
+/// `\blur` accepts a non-negative decimal ([`canon_decimal_nonneg_opt`]).
+/// A spelling outside those shapes — a `-` sign, a `\be1.5`, a trailing
+/// `.`, an embedded space — stays an untyped [`AssTag::Other`] and
+/// [`emit`] is byte-stable. The empty parameter is the documented
+/// reset-to-style form in both cases.
+///
+/// Order matters: `\blur` is checked before `\be` (the names share only
+/// the leading `b`, so no collision, but the longer match is taken
+/// first), and both run after the `\bord` family in [`classify`] so
+/// `\bord` is never mistaken for a `\b`-toggle.
+fn classify_blur(tag: &str) -> Option<AssTag> {
+    if let Some(rest) = tag.strip_prefix("blur") {
+        return Some(AssTag::Blur {
+            kind: AssBlurKind::Gaussian,
+            strength: canon_decimal_nonneg_opt(rest)?,
+        });
+    }
+    if let Some(rest) = tag.strip_prefix("be") {
+        return Some(AssTag::Blur {
+            kind: AssBlurKind::Edge,
+            strength: canon_uint_opt(rest)?,
+        });
+    }
+    None
+}
+
 /// [`canon_decimal_opt`] restricted to a non-negative run: the empty
 /// reset form, or a [`canon_decimal`] run with no leading `-`. Used by
 /// the `\bord` family and the combined `\shad`, which the spec forbids
@@ -806,6 +880,20 @@ fn canon_decimal_opt(rest: &str) -> Option<Option<String>> {
         return Some(None);
     }
     canon_decimal(rest).then(|| Some(rest.to_string()))
+}
+
+/// Match an integer-only tag parameter (the `\be` repeat count, which
+/// the spec says "must be an integer number"). `""` is the
+/// parameterless reset form (`Some(None)`); a canonically-spelled
+/// non-negative integer run (per [`canon_u32`]) yields the verbatim
+/// string (`Some(Some(_))`); any other shape — a sign, a decimal point,
+/// a leading zero, embedded whitespace — is `None` and the whole tag
+/// stays an untyped [`AssTag::Other`].
+fn canon_uint_opt(rest: &str) -> Option<Option<String>> {
+    if rest.is_empty() {
+        return Some(None);
+    }
+    canon_u32(rest).map(|_| Some(rest.to_string()))
 }
 
 /// `<name>(<args>)` with nothing after the closing parenthesis →
@@ -1087,6 +1175,15 @@ pub fn emit(tokens: &[AssToken]) -> String {
                                 out.push_str(d);
                             }
                         }
+                        AssTag::Blur { kind, strength } => {
+                            out.push_str(match kind {
+                                AssBlurKind::Edge => "\\be",
+                                AssBlurKind::Gaussian => "\\blur",
+                            });
+                            if let Some(s) = strength {
+                                out.push_str(s);
+                            }
+                        }
                         AssTag::Move {
                             x1,
                             y1,
@@ -1261,20 +1358,32 @@ mod tests {
 
     #[test]
     fn longer_tags_sharing_a_flag_prefix_stay_other() {
-        // \be, \blur, \iclip must not be mistaken for \b / \s / \i
-        // numeric forms; they have no typed variant yet so stay Other.
-        for (s, body) in [
-            ("{\\be1}", "be1"),
-            ("{\\blur2}", "blur2"),
-            ("{\\iclip(0,0,100,100)}", "iclip(0,0,100,100)"),
-        ] {
-            assert_eq!(
-                tokenize(s),
-                vec![AssToken::Override(vec![AssTag::Other(body.into())])],
-                "for {s:?}"
-            );
-            roundtrip(s);
-        }
+        // \be / \blur share the \b prefix but are the typed blur family,
+        // not the \b flag toggle. \iclip shares the \i prefix and has no
+        // typed variant, so it stays Other.
+        assert_eq!(
+            tokenize("{\\be1}"),
+            vec![AssToken::Override(vec![AssTag::Blur {
+                kind: AssBlurKind::Edge,
+                strength: Some("1".into()),
+            }])]
+        );
+        assert_eq!(
+            tokenize("{\\blur2}"),
+            vec![AssToken::Override(vec![AssTag::Blur {
+                kind: AssBlurKind::Gaussian,
+                strength: Some("2".into()),
+            }])]
+        );
+        assert_eq!(
+            tokenize("{\\iclip(0,0,100,100)}"),
+            vec![AssToken::Override(vec![AssTag::Other(
+                "iclip(0,0,100,100)".into()
+            )])]
+        );
+        roundtrip("{\\be1}");
+        roundtrip("{\\blur2}");
+        roundtrip("{\\iclip(0,0,100,100)}");
         // \bord / \shad share the \b / \s prefix but are the typed
         // border / shadow family, not the flag toggles — they must NOT
         // resolve to Bold / Strikeout.
@@ -1396,10 +1505,11 @@ mod tests {
 
     #[test]
     fn font_prefix_cousins_not_swallowed() {
-        // \fad / \fade are function tags; \be / \blur begin with letters
-        // the \f* family must not absorb. (\bord / \shad are the typed
-        // border / shadow family — see border_shadow tests.)
-        for body in ["fad(1,2)", "fade(1,2,3,4,5,6,7)", "be2", "blur3"] {
+        // \fad / \fade are function tags the \f* family must not absorb.
+        // (\bord / \shad are the typed border / shadow family — see the
+        // border_shadow tests; \be / \blur are the typed blur family —
+        // see the blur tests.)
+        for body in ["fad(1,2)", "fade(1,2,3,4,5,6,7)"] {
             let s = format!("{{\\{body}}}");
             assert_eq!(
                 tokenize(&s)[0],
@@ -1407,6 +1517,51 @@ mod tests {
                 "{body} must stay verbatim"
             );
         }
+    }
+
+    #[test]
+    fn blur_family_types_and_distinguishes_kind() {
+        // \be is an integer-count edge softening; \blur is the gaussian
+        // variant whose strength may be fractional. Both keep their
+        // spelling so emit is byte-stable.
+        assert_eq!(
+            tokenize("{\\be2\\blur1.5}")[0],
+            AssToken::Override(vec![
+                AssTag::Blur {
+                    kind: AssBlurKind::Edge,
+                    strength: Some("2".into()),
+                },
+                AssTag::Blur {
+                    kind: AssBlurKind::Gaussian,
+                    strength: Some("1.5".into()),
+                },
+            ])
+        );
+        // Parameterless forms reset to the line style.
+        assert_eq!(
+            tokenize("{\\be\\blur}")[0],
+            AssToken::Override(vec![
+                AssTag::Blur {
+                    kind: AssBlurKind::Edge,
+                    strength: None,
+                },
+                AssTag::Blur {
+                    kind: AssBlurKind::Gaussian,
+                    strength: None,
+                },
+            ])
+        );
+        // A decimal \be (count must be integer) and any signed strength
+        // fall through to verbatim Other.
+        for body in ["be1.5", "be-1", "blur-1"] {
+            let s = format!("{{\\{body}}}");
+            assert_eq!(
+                tokenize(&s)[0],
+                AssToken::Override(vec![AssTag::Other(body.into())]),
+                "{body} must stay verbatim"
+            );
+        }
+        roundtrip("{\\be0}{\\be4}{\\blur0}{\\blur3.2}x");
     }
 
     #[test]
