@@ -169,6 +169,48 @@ pub enum AssBlurKind {
     Gaussian,
 }
 
+/// The clipped region carried by a `\clip` / `\iclip` override.
+///
+/// Per the Aegisub override-tag reference, `\clip` / `\iclip` take one
+/// of two argument shapes. The rectangular form
+/// `\clip(<x1>,<y1>,<x2>,<y2>)` defines an axis-aligned box — "only the
+/// part of the line that is inside the rectangle is visible" — whose
+/// coordinates "are given in script resolution pixels and are relative
+/// to the top-left corner of the video. The coordinates must be
+/// integers, there is no possibility to use non-integer coordinates."
+/// The vector-drawing form `\clip(<drawing commands>)` /
+/// `\clip(<scale>,<drawing commands>)` clips against an arbitrary shape:
+/// "The drawing commands are drawing commands as those used with the
+/// `\p` tag". "If the scale is not specified it is assumed to be 1
+/// (one), meaning that coordinates correspond directly to pixels."
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AssClipShape {
+    /// `\clip(<x1>,<y1>,<x2>,<y2>)` — axis-aligned rectangle in
+    /// script-resolution pixels. The coordinates "must be integers".
+    Rectangle {
+        /// Top-left X.
+        x1: i32,
+        /// Top-left Y.
+        y1: i32,
+        /// Bottom-right X.
+        x2: i32,
+        /// Bottom-right Y.
+        y2: i32,
+    },
+    /// `\clip(<drawing commands>)` / `\clip(<scale>,<drawing commands>)`
+    /// — a vector-drawing clip path. `scale` carries the optional
+    /// integer scale ("the scale works the same way as the scale for
+    /// `\p` drawings"); `None` is the omitted form ("assumed to be 1").
+    /// `commands` is the verbatim drawing-command run, preserved exactly
+    /// as written so [`emit`] stays byte-stable.
+    Drawing {
+        /// Optional integer scale, or `None` for the unscaled form.
+        scale: Option<u32>,
+        /// Verbatim `\p`-style drawing commands.
+        commands: String,
+    },
+}
+
 /// One tag inside an override block.
 ///
 /// The typed variants carry the parsed parameter; `None` is the
@@ -403,6 +445,30 @@ pub enum AssTag {
         /// Verbatim strength run, or `None` for the reset form.
         strength: Option<String>,
     },
+    /// `\clip(...)` / `\iclip(...)` — clip the line to (or, for
+    /// `\iclip`, away from) a region. Per the Aegisub override-tag
+    /// reference `\clip` keeps "only the part of the line that is inside
+    /// the rectangle", while "the `\iclip` tag has the opposite effect,
+    /// it defines a rectangle where the line is not shown"; the same
+    /// inverse relationship holds for the vector-drawing forms. The
+    /// region shape is carried by [`AssClipShape`].
+    ///
+    /// `\clip` / `\iclip` are line-property tags ("Tags in the first
+    /// category should appear at most once in a line"); the two are
+    /// mutually exclusive. Only the documented argument shapes are typed
+    /// — a rectangle of four canonical integers, a one-argument vector
+    /// drawing, or a `<scale>,<drawing>` pair whose scale is a canonical
+    /// integer. Any off-shape spelling (a non-integer rectangle
+    /// coordinate, a two-coordinate argument list, trailing text after
+    /// the closing parenthesis) stays an untyped [`AssTag::Other`] so
+    /// [`emit`] is byte-stable.
+    Clip {
+        /// `true` for `\iclip` (hide inside the region), `false` for
+        /// `\clip` (show only inside the region).
+        inverse: bool,
+        /// The clipped region.
+        shape: AssClipShape,
+    },
     /// Any other tag, kept verbatim — the full body after the
     /// backslash, including parenthesised parameter lists
     /// (`t(0,1000,\fscx200)`, `fad(200,200)`, `1c&HFF&`, …).
@@ -540,6 +606,9 @@ fn classify(tag: &str) -> AssTag {
         return typed;
     }
     if let Some(typed) = classify_blur(tag) {
+        return typed;
+    }
+    if let Some(typed) = classify_clip(tag) {
         return typed;
     }
     let (head, arg) = match tag.chars().next() {
@@ -858,6 +927,97 @@ fn classify_blur(tag: &str) -> Option<AssTag> {
         });
     }
     None
+}
+
+/// Try the clip tag family: `\clip(...)` and `\iclip(...)`.
+///
+/// Per the Aegisub override-tag reference these come in two argument
+/// shapes — a rectangle `(<x1>,<y1>,<x2>,<y2>)` of four integers
+/// ("the coordinates must be integers"), or a vector drawing
+/// `(<drawing commands>)` / `(<scale>,<drawing commands>)` whose
+/// optional leading scale "works the same way as the scale for `\p`
+/// drawings". The argument list is disambiguated by its top-level comma
+/// count: four comma-separated canonical integers is the rectangle;
+/// a single argument is an unscaled drawing; a leading canonical
+/// integer followed by one comma and the rest is a scaled drawing. The
+/// drawing commands themselves are space-separated `\p` operations
+/// (`m 50 0 b 100 0 …`) with no top-level comma, so the split is
+/// unambiguous and the command run rides through verbatim.
+///
+/// Any spelling outside those shapes — a non-integer rectangle
+/// coordinate, a two- or three-coordinate argument list, a non-integer
+/// scale, trailing text after the closing parenthesis — returns `None`
+/// so the caller keeps it as an untyped [`AssTag::Other`] and [`emit`]
+/// stays byte-stable.
+fn classify_clip(tag: &str) -> Option<AssTag> {
+    let (inverse, args) = if let Some(a) = paren_args(tag, "iclip") {
+        (true, a)
+    } else if let Some(a) = paren_args(tag, "clip") {
+        (false, a)
+    } else {
+        return None;
+    };
+    // A rectangle is exactly four canonical integers. The drawing-command
+    // run never contains a top-level comma, so a four-comma split that
+    // parses as four integers is unambiguously the rectangle form.
+    let parts: Vec<&str> = args.split(',').collect();
+    if parts.len() == 4 {
+        return Some(AssTag::Clip {
+            inverse,
+            shape: AssClipShape::Rectangle {
+                x1: canon_i32(parts[0])?,
+                y1: canon_i32(parts[1])?,
+                x2: canon_i32(parts[2])?,
+                y2: canon_i32(parts[3])?,
+            },
+        });
+    }
+    // The scaled drawing form `<scale>,<drawing commands>`: a canonical
+    // integer scale, one comma, then the verbatim command run. Split
+    // only on the first comma. The command run must actually look like a
+    // `\p` drawing (every drawing starts with a command letter such as
+    // `m`/`l`/`b`); requiring an ASCII letter keeps a bare two-integer
+    // coordinate pair like `(50,50)` out of the scaled-drawing arm, so
+    // an undocumented two-coordinate list stays an untyped
+    // [`AssTag::Other`].
+    if parts.len() == 2 {
+        if let Some((scale, commands)) = args.split_once(',') {
+            if is_drawing_commands(commands) {
+                let scale = canon_u32(scale)?;
+                return Some(AssTag::Clip {
+                    inverse,
+                    shape: AssClipShape::Drawing {
+                        scale: Some(scale),
+                        commands: commands.to_string(),
+                    },
+                });
+            }
+        }
+        return None;
+    }
+    // A single argument is an unscaled vector drawing, provided it looks
+    // like a `\p` drawing. An empty argument list, or any other comma
+    // arity (three coordinates, five-plus values), is not a documented
+    // shape and stays verbatim.
+    if parts.len() == 1 && is_drawing_commands(args) {
+        return Some(AssTag::Clip {
+            inverse,
+            shape: AssClipShape::Drawing {
+                scale: None,
+                commands: args.to_string(),
+            },
+        });
+    }
+    None
+}
+
+/// Does `s` plausibly hold `\p`-style drawing commands? Every drawing
+/// begins with a command letter (`m` move, `l` line, `b` bezier, `n`,
+/// `s` spline, `p`, `c`), so a run that contains at least one ASCII
+/// letter is treated as a drawing while a pure-numeric run (which would
+/// be an undocumented bare coordinate list) is not.
+fn is_drawing_commands(s: &str) -> bool {
+    s.bytes().any(|b| b.is_ascii_alphabetic())
 }
 
 /// [`canon_decimal_opt`] restricted to a non-negative run: the empty
@@ -1199,6 +1359,22 @@ pub fn emit(tokens: &[AssToken]) -> String {
                             }
                             out.push(')');
                         }
+                        AssTag::Clip { inverse, shape } => {
+                            out.push('\\');
+                            out.push_str(if *inverse { "iclip(" } else { "clip(" });
+                            match shape {
+                                AssClipShape::Rectangle { x1, y1, x2, y2 } => {
+                                    out.push_str(&format!("{x1},{y1},{x2},{y2}"));
+                                }
+                                AssClipShape::Drawing { scale, commands } => {
+                                    if let Some(s) = scale {
+                                        out.push_str(&format!("{s},"));
+                                    }
+                                    out.push_str(commands);
+                                }
+                            }
+                            out.push(')');
+                        }
                         AssTag::Other(body) => {
                             out.push('\\');
                             out.push_str(body);
@@ -1361,8 +1537,9 @@ mod tests {
     #[test]
     fn longer_tags_sharing_a_flag_prefix_stay_other() {
         // \be / \blur share the \b prefix but are the typed blur family,
-        // not the \b flag toggle. \iclip shares the \i prefix and has no
-        // typed variant, so it stays Other.
+        // not the \b flag toggle. \iclip shares the \i prefix but is the
+        // typed clip family, not the \i toggle — the exact-prefix paren
+        // match keeps the two distinct.
         assert_eq!(
             tokenize("{\\be1}"),
             vec![AssToken::Override(vec![AssTag::Blur {
@@ -1379,9 +1556,15 @@ mod tests {
         );
         assert_eq!(
             tokenize("{\\iclip(0,0,100,100)}"),
-            vec![AssToken::Override(vec![AssTag::Other(
-                "iclip(0,0,100,100)".into()
-            )])]
+            vec![AssToken::Override(vec![AssTag::Clip {
+                inverse: true,
+                shape: AssClipShape::Rectangle {
+                    x1: 0,
+                    y1: 0,
+                    x2: 100,
+                    y2: 100,
+                },
+            }])]
         );
         roundtrip("{\\be1}");
         roundtrip("{\\blur2}");
@@ -1941,17 +2124,15 @@ mod tests {
     #[test]
     fn off_shape_colour_parameters_stay_verbatim_other() {
         // Codes "must always start with &H and end with &" — anything
-        // off-shape is preserved byte-for-byte, untyped. \clip shares
-        // the \c prefix and must not be mistaken for a colour.
+        // off-shape is preserved byte-for-byte, untyped.
         for (s, body) in [
-            ("{\\c&HFF}", "c&HFF"),                     // no closing &
-            ("{\\cHFF&}", "cHFF&"),                     // no &H opener
-            ("{\\c&H&}", "c&H&"),                       // empty digit run
-            ("{\\c&HGG&}", "c&HGG&"),                   // non-hex digits
-            ("{\\c&HFFFFFFF&}", "c&HFFFFFFF&"),         // 7 digits
-            ("{\\alpha&H123&}", "alpha&H123&"),         // 3 digits
-            ("{\\5c&HFF&}", "5c&HFF&"),                 // no 5th component
-            ("{\\clip(0,0,10,10)}", "clip(0,0,10,10)"), // prefix cousin
+            ("{\\c&HFF}", "c&HFF"),             // no closing &
+            ("{\\cHFF&}", "cHFF&"),             // no &H opener
+            ("{\\c&H&}", "c&H&"),               // empty digit run
+            ("{\\c&HGG&}", "c&HGG&"),           // non-hex digits
+            ("{\\c&HFFFFFFF&}", "c&HFFFFFFF&"), // 7 digits
+            ("{\\alpha&H123&}", "alpha&H123&"), // 3 digits
+            ("{\\5c&HFF&}", "5c&HFF&"),         // no 5th component
         ] {
             assert_eq!(
                 tokenize(s),
@@ -1960,6 +2141,21 @@ mod tests {
             );
             roundtrip(s);
         }
+        // \clip shares the \c prefix but is the typed clip family, not a
+        // colour — the exact-prefix paren match keeps the two distinct.
+        assert_eq!(
+            tokenize("{\\clip(0,0,10,10)}"),
+            vec![AssToken::Override(vec![AssTag::Clip {
+                inverse: false,
+                shape: AssClipShape::Rectangle {
+                    x1: 0,
+                    y1: 0,
+                    x2: 10,
+                    y2: 10,
+                },
+            }])]
+        );
+        roundtrip("{\\clip(0,0,10,10)}");
         assert_eq!(decode_bgr_hex("FFFFFFF"), None);
         assert_eq!(decode_bgr_hex(""), None);
         assert_eq!(decode_alpha_hex("123"), None);

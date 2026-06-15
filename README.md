@@ -192,8 +192,27 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   matched ahead of `\be`, both after the `\bord` family so `\bord` is
   never mistaken for a `\b` toggle. Parameterless `\be` / `\blur` are the
   reset-to-style shape (`None`).
+* The clip family is typed: `\clip` / `\iclip` parse to
+  `AssTag::Clip { inverse, shape }` over the new `AssClipShape`
+  (re-exported at the crate root). The rectangle shape
+  `\clip(x1,y1,x2,y2)` keeps "only the part of the line that is inside
+  the rectangle" — its four coordinates "must be integers" so a
+  non-integer coordinate keeps the whole tag verbatim — and `\iclip`
+  "has the opposite effect" (`inverse: true`, hide inside the box). The
+  vector-drawing shape `\clip(<drawing>)` / `\clip(<scale>,<drawing>)`
+  clips against a `\p`-style path; the optional integer `scale` ("If the
+  scale is not specified it is assumed to be 1") is carried distinctly
+  and the drawing-command run rides through verbatim, so emit stays
+  byte-stable. The argument list is disambiguated by its top-level comma
+  count (four integers → rectangle; one argument → unscaled drawing; an
+  integer scale + drawing → scaled), and a drawing arm requires an
+  actual command letter so a bare two-coordinate list (`\clip(50,50)`)
+  stays an untyped `AssTag::Other`. Off-shape arities, a non-integer
+  scale, an empty argument list, or trailing text after the close paren
+  also stay verbatim. The exact-prefix paren match keeps `\iclip` /
+  `\clip` distinct from the `\i` toggle and `\c` colour.
 * Every other tag — `\t(...)` transforms whose parenthesised argument
-  carries nested backslash modifiers, fades, clips,
+  carries nested backslash modifiers, fades,
   drawing-mode `\p` — is preserved verbatim as `AssTag::Other`, and
   non-tag text inside a block becomes `AssTag::Comment`, so
   `emit(&tokenize(s)) == s` byte-for-byte on every input (unterminated
@@ -204,8 +223,8 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   accessor) — `\n` breaks only in wrap mode 2 and is a regular space
   otherwise, `\N` always breaks, `\h` becomes U+00A0.
 
-Typed coverage of the remaining tag set (`\t` transforms,
-`\fad` / `\fade`, and `\clip` / `\iclip`) is the chain's next material.
+Typed coverage of the remaining tag set (`\t` transforms and
+`\fad` / `\fade`) is the chain's next material.
 
 ## ASS / SSA `[Script Info]` typed accessor
 

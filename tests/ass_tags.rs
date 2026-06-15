@@ -7,7 +7,8 @@ use oxideav_subtitle::ass_tags::{
     tokenize, AssRotationAxis,
 };
 use oxideav_subtitle::{
-    AssBlurKind, AssBorderAxis, AssColorTarget, AssKaraokeKind, AssTag, AssToken, WrapStyle,
+    AssBlurKind, AssBorderAxis, AssClipShape, AssColorTarget, AssKaraokeKind, AssTag, AssToken,
+    WrapStyle,
 };
 
 #[test]
@@ -483,4 +484,138 @@ fn off_shape_blur_params_stay_verbatim() {
             "{body} must stay an untyped Other"
         );
     }
+}
+
+#[test]
+fn clip_rectangle_is_typed() {
+    // Aegisub reference, "Clip (rectangle)": \clip(<x1>,<y1>,<x2>,<y2>)
+    // — "only the part of the line that is inside the rectangle is
+    // visible." The worked example \clip(0,0,320,240).
+    let text = "{\\clip(0,0,320,240)}Top-left quadrant";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text);
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![AssTag::Clip {
+            inverse: false,
+            shape: AssClipShape::Rectangle {
+                x1: 0,
+                y1: 0,
+                x2: 320,
+                y2: 240,
+            },
+        }])
+    );
+}
+
+#[test]
+fn iclip_rectangle_is_typed_inverse() {
+    // "The \iclip tag has the opposite effect, it defines a rectangle
+    // where the line is not shown." The worked example
+    // \iclip(0,0,320,240). Negative coordinates are valid integers.
+    let text = "{\\iclip(-10,5,320,240)}x";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text);
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![AssTag::Clip {
+            inverse: true,
+            shape: AssClipShape::Rectangle {
+                x1: -10,
+                y1: 5,
+                x2: 320,
+                y2: 240,
+            },
+        }])
+    );
+}
+
+#[test]
+fn clip_vector_drawing_unscaled_is_typed() {
+    // "Clip (vector drawing)": \clip(<drawing commands>) — the commands
+    // "are drawing commands as those used with the \p tag". An unscaled
+    // pseudo-circle path.
+    let text = "{\\clip(m 50 0 b 100 0 100 100 50 100)}x";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text);
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![AssTag::Clip {
+            inverse: false,
+            shape: AssClipShape::Drawing {
+                scale: None,
+                commands: "m 50 0 b 100 0 100 100 50 100".into(),
+            },
+        }])
+    );
+}
+
+#[test]
+fn clip_vector_drawing_scaled_is_typed() {
+    // \clip(<scale>,<drawing commands>) — the worked example
+    // \clip(1,m 50 0 b 100 0 100 100 50 100 b 0 100 0 0 50 0). "If the
+    // scale is not specified it is assumed to be 1." \iclip takes the
+    // same scaled-drawing shape.
+    let text = "{\\iclip(2,m 50 0 b 100 0 100 100 50 100)}x";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text);
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![AssTag::Clip {
+            inverse: true,
+            shape: AssClipShape::Drawing {
+                scale: Some(2),
+                commands: "m 50 0 b 100 0 100 100 50 100".into(),
+            },
+        }])
+    );
+}
+
+#[test]
+fn off_shape_clip_params_stay_verbatim() {
+    // Only the documented argument shapes are typed; everything else
+    // stays an untyped Other so emit is byte-stable.
+    for body in [
+        "clip(0,0,320)",       // three coords, not a rectangle
+        "clip(0,0,320,240,5)", // five values
+        "clip(0,0,1.5,240)",   // non-integer rectangle coordinate
+        "clip(50,50)",         // bare two-coordinate list, not a drawing
+        "clip(2,5)",           // scaled-drawing arm: rhs has no command letter
+        "clip(1.5,m 0 0 l 9)", // non-integer scale
+        "clip()",              // empty argument list
+        "clip(0,0,320,240)x",  // trailing text after the close paren
+    ] {
+        let text = format!("{{\\{body}}}x");
+        let tokens = tokenize(&text);
+        assert_eq!(emit(&tokens), text, "{body} must round-trip verbatim");
+        assert_eq!(
+            tokens[0],
+            AssToken::Override(vec![AssTag::Other(body.into())]),
+            "{body} must stay an untyped Other"
+        );
+    }
+}
+
+#[test]
+fn iclip_does_not_collide_with_italic_flag() {
+    // The exact-prefix paren match means \i1 stays the italic toggle and
+    // \iclip(...) the clip tag — neither is mistaken for the other.
+    let text = "{\\i1\\iclip(0,0,10,10)}x";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text);
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![
+            AssTag::Italic(Some(true)),
+            AssTag::Clip {
+                inverse: true,
+                shape: AssClipShape::Rectangle {
+                    x1: 0,
+                    y1: 0,
+                    x2: 10,
+                    y2: 10,
+                },
+            },
+        ])
+    );
 }

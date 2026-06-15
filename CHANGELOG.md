@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA typed clip override tags in `ass_tags`. `\clip` and `\iclip`
+  parse to `AssTag::Clip { inverse, shape }` over the new `AssClipShape`
+  enum (re-exported at the crate root). Per the Aegisub override-tag
+  reference the rectangle shape `\clip(<x1>,<y1>,<x2>,<y2>)` keeps "only
+  the part of the line that is inside the rectangle" and its coordinates
+  "must be integers"; `\iclip` "has the opposite effect" (`inverse:
+  true`). The vector-drawing shape `\clip(<drawing commands>)` /
+  `\clip(<scale>,<drawing commands>)` clips against a `\p`-style path,
+  with the optional integer scale ("If the scale is not specified it is
+  assumed to be 1") carried distinctly and the command run preserved
+  verbatim so `emit` stays byte-stable. The argument list is
+  disambiguated by its top-level comma count (four integers → rectangle;
+  one argument → unscaled drawing; an integer scale + drawing →
+  scaled), and a drawing arm requires an actual command letter so a bare
+  two-coordinate list stays an untyped `AssTag::Other`. Off-shape
+  arities, a non-integer rectangle coordinate or scale, an empty
+  argument list, and trailing text after the close paren all stay
+  verbatim. Exact-prefix paren matching keeps `\iclip` / `\clip`
+  distinct from the `\i` toggle and `\c` colour.
 - ASS / SSA typed edge-blur override tags in `ass_tags`. `\be` and
   `\blur` parse to `AssTag::Blur { kind, strength }` over the new
   `AssBlurKind` enum (`Edge` for `\be`, `Gaussian` for `\blur`,
