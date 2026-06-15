@@ -71,15 +71,13 @@ let video_dec = make_rendered_decoder_with_face(srt_decoder, 640, 480, chain);
 let video_dec = RenderedSubtitleDecoder::new(srt_decoder, 640, 480).with_face(chain);
 ```
 
-### Round-1 deferrals on the Scribe + Raster path
+### Limitations on the Scribe + Raster path
 
 Italic / weight synthesis on runs marked italic + bold currently render
 upright/regular (they go through `Shaper::shape_to_paths`, which uses
-the upright outline; round 2 will route those through a
-`render_text_styled`-equivalent vector path or a paired italic / bold
-`Face`). `Segment::Font.family` is ignored — the explicit `FaceChain`
-the caller installed is always used. Outline smear isn't replicated on
-this path.
+the upright outline). `Segment::Font.family` is ignored — the explicit
+`FaceChain` the caller installed is always used. Outline smear isn't
+replicated on this path.
 
 The bitmap-font path is unaffected by these and continues to honour
 bold / italic / per-run colour as before.
