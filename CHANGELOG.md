@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA typed fade override tags in `ass_tags`. `\fad` and `\fade`
+  parse to `AssTag::Fade(spec)` over the new `AssFadeSpec` enum
+  (re-exported at the crate root). Per the Aegisub override-tag
+  reference the simple `\fad(<fadein>,<fadeout>)` "produces a fade-in
+  and fade-out effect. The fadein and fadeout times are given in
+  milliseconds" (either may be 0 "to not have any fade effect on that
+  end") and types to `AssFadeSpec::Simple { fadein, fadeout }` from two
+  non-negative integers. The complex
+  `\fade(<a1>,<a2>,<a3>,<t1>,<t2>,<t3>,<t4>)` performs "a five-part fade
+  using three alpha values … and four times": the alphas "are given in
+  decimal and are between 0 and 255" (`u8`), the times "are given in
+  milliseconds after the start of the line", and "all seven parameters
+  are required" → `AssFadeSpec::Complex { a1, a2, a3, t1, t2, t3, t4 }`.
+  Each value is canonically spelled, so a wrong arity, a signed or
+  non-integer value, an alpha above 255, or trailing text after the
+  close paren keeps the whole tag verbatim `AssTag::Other` and `emit`
+  stays byte-stable. The `\fade` arm is tried ahead of `\fad`, and the
+  exact-prefix paren match keeps both distinct from the `\f*`
+  font-metric family.
 - ASS / SSA typed clip override tags in `ass_tags`. `\clip` and `\iclip`
   parse to `AssTag::Clip { inverse, shape }` over the new `AssClipShape`
   enum (re-exported at the crate root). Per the Aegisub override-tag

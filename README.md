@@ -211,9 +211,27 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   scale, an empty argument list, or trailing text after the close paren
   also stay verbatim. The exact-prefix paren match keeps `\iclip` /
   `\clip` distinct from the `\i` toggle and `\c` colour.
+* The fade family is typed: `\fad` / `\fade` parse to
+  `AssTag::Fade(spec)` over the new `AssFadeSpec` (re-exported at the
+  crate root). The simple `\fad(<fadein>,<fadeout>)` "produces a
+  fade-in and fade-out effect. The fadein and fadeout times are given
+  in milliseconds" (either may be 0 "to not have any fade effect on
+  that end") and types to `AssFadeSpec::Simple { fadein, fadeout }`
+  from two non-negative integers. The complex
+  `\fade(<a1>,<a2>,<a3>,<t1>,<t2>,<t3>,<t4>)` performs "a five-part
+  fade using three alpha values … and four times" — the alphas "are
+  given in decimal and are between 0 and 255" (`u8`) and the times "are
+  given in milliseconds after the start of the line", all seven
+  "required" — and types to `AssFadeSpec::Complex { a1, a2, a3, t1, t2,
+  t3, t4 }`. Each value is canonically spelled (`\fad`'s two ms, `\fade`'s
+  three 0–255 alphas + four ms), so a wrong arity, a signed or
+  non-integer value, an alpha above 255, or trailing text after the
+  close paren keeps the whole tag verbatim `AssTag::Other`. The `\fade`
+  arm is tried ahead of `\fad`, and the exact-prefix paren match keeps
+  both distinct from the `\f*` font-metric family.
 * Every other tag — `\t(...)` transforms whose parenthesised argument
-  carries nested backslash modifiers, fades,
-  drawing-mode `\p` — is preserved verbatim as `AssTag::Other`, and
+  carries nested backslash modifiers, drawing-mode `\p` — is preserved
+  verbatim as `AssTag::Other`, and
   non-tag text inside a block becomes `AssTag::Comment`, so
   `emit(&tokenize(s)) == s` byte-for-byte on every input (unterminated
   `{` and unrecognised backslash sequences stay literal text).
@@ -223,8 +241,9 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   accessor) — `\n` breaks only in wrap mode 2 and is a regular space
   otherwise, `\N` always breaks, `\h` becomes U+00A0.
 
-Typed coverage of the remaining tag set (`\t` transforms and
-`\fad` / `\fade`) is the chain's next material.
+Typed coverage of the remaining `\t(...)` animated-transform tag — whose
+parenthesised argument carries nested backslash modifiers — is the
+chain's next material.
 
 ## ASS / SSA `[Script Info]` typed accessor
 

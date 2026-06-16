@@ -39,12 +39,12 @@
 //! family (`\fn`, `\fs`, `\fscx` / `\fscy`, `\fsp`, `\fe`, and
 //! `\frx` / `\fry` / `\frz` plus the bare `\fr`), the border / shadow
 //! family (`\bord` / `\xbord` / `\ybord`, `\shad` / `\xshad` /
-//! `\yshad`), and the edge-blur family (`\be` / `\blur`).
+//! `\yshad`), the edge-blur family (`\be` / `\blur`), the clip family
+//! (`\clip` / `\iclip`), and the fade family (`\fad` / `\fade`).
 //! Every other tag is preserved verbatim in [`AssTag::Other`], so
 //! [`emit`] reproduces the original text byte-for-byte and no
 //! information is dropped. Typed coverage of the remaining tag set
-//! (`\t` transforms, `\fad` / `\fade`, `\clip` / `\iclip`) is
-//! follow-up material.
+//! (the `\t(...)` animated-transform tag) is follow-up material.
 
 use crate::ass_script_info::WrapStyle;
 
@@ -208,6 +208,52 @@ pub enum AssClipShape {
         scale: Option<u32>,
         /// Verbatim `\p`-style drawing commands.
         commands: String,
+    },
+}
+
+/// The fade specification carried by a `\fad` / `\fade` override.
+///
+/// Per the Aegisub override-tag reference, the two fade tags are
+/// mutually exclusive line-property tags. The simple form
+/// `\fad(<fadein>,<fadeout>)` "produces a fade-in and fade-out effect.
+/// The fadein and fadeout times are given in milliseconds"; either may
+/// be 0 "to not have any fade effect on that end". The complex form
+/// `\fade(<a1>,<a2>,<a3>,<t1>,<t2>,<t3>,<t4>)` performs "a five-part
+/// fade using three alpha values … and four times": the alphas "are
+/// given in decimal and are between 0 and 255, with 0 being fully
+/// visible and 255 being invisible", and the times "are given in
+/// milliseconds after the start of the line. All seven parameters are
+/// required."
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssFadeSpec {
+    /// `\fad(<fadein>,<fadeout>)` — a fade-in / fade-out pair, each a
+    /// non-negative duration in milliseconds (0 disables that end).
+    Simple {
+        /// Fade-in duration in milliseconds.
+        fadein: u32,
+        /// Fade-out duration in milliseconds.
+        fadeout: u32,
+    },
+    /// `\fade(<a1>,<a2>,<a3>,<t1>,<t2>,<t3>,<t4>)` — a five-part fade.
+    /// "Before t1, the line has alpha a1. Between t1 and t2 the line
+    /// fades from alpha a1 to alpha a2. Between t2 and t3 the line has
+    /// alpha a2 constantly. Between t3 and t4 the line fades from alpha
+    /// a2 to alpha a3. After t4 the line has alpha a3."
+    Complex {
+        /// Alpha before `t1` (0 fully visible … 255 invisible).
+        a1: u8,
+        /// Alpha held between `t2` and `t3`.
+        a2: u8,
+        /// Alpha after `t4`.
+        a3: u8,
+        /// First keyframe time in milliseconds after the line start.
+        t1: u32,
+        /// Second keyframe time in milliseconds.
+        t2: u32,
+        /// Third keyframe time in milliseconds.
+        t3: u32,
+        /// Fourth keyframe time in milliseconds.
+        t4: u32,
     },
 }
 
@@ -469,9 +515,25 @@ pub enum AssTag {
         /// The clipped region.
         shape: AssClipShape,
     },
+    /// `\fad(...)` / `\fade(...)` — a fade animation applied to the
+    /// whole line. Per the Aegisub override-tag reference both are
+    /// line-property tags ("Tags in the first category should appear at
+    /// most once in a line") and the two are mutually exclusive. The
+    /// simple `\fad(<fadein>,<fadeout>)` and complex
+    /// `\fade(<a1>,<a2>,<a3>,<t1>,<t2>,<t3>,<t4>)` shapes are carried by
+    /// [`AssFadeSpec`].
+    ///
+    /// Only the documented argument shapes are typed — two non-negative
+    /// integer milliseconds for `\fad`, or three 0–255 alphas plus four
+    /// non-negative integer milliseconds for `\fade`. Any off-shape
+    /// spelling (wrong arity, a signed or non-integer value, an alpha
+    /// above 255, trailing text after the closing parenthesis) stays an
+    /// untyped [`AssTag::Other`] so [`emit`] is byte-stable.
+    Fade(AssFadeSpec),
     /// Any other tag, kept verbatim — the full body after the
     /// backslash, including parenthesised parameter lists
-    /// (`t(0,1000,\fscx200)`, `fad(200,200)`, `1c&HFF&`, …).
+    /// (`t(0,1000,\fscx200)`, a `\fad` / `\fade` whose arguments fall
+    /// outside the typed shape, …).
     Other(String),
     /// Non-tag text inside the block, kept verbatim. The Aegisub
     /// reference: "Any unrecognized text within override blocks is
@@ -609,6 +671,9 @@ fn classify(tag: &str) -> AssTag {
         return typed;
     }
     if let Some(typed) = classify_clip(tag) {
+        return typed;
+    }
+    if let Some(typed) = classify_fade(tag) {
         return typed;
     }
     let (head, arg) = match tag.chars().next() {
@@ -1020,6 +1085,47 @@ fn is_drawing_commands(s: &str) -> bool {
     s.bytes().any(|b| b.is_ascii_alphabetic())
 }
 
+/// Try the fade tag family: `\fad(<fadein>,<fadeout>)` and the complex
+/// `\fade(<a1>,<a2>,<a3>,<t1>,<t2>,<t3>,<t4>)`.
+///
+/// The simple form takes exactly two non-negative integer millisecond
+/// values (per the Aegisub reference the times "are given in
+/// milliseconds" and either may be 0). The complex form takes exactly
+/// seven values: three alpha bytes ("between 0 and 255") followed by
+/// four non-negative integer millisecond times. Both are canonically
+/// spelled via [`canon_u32`] / [`canon_u8`], so any value that wouldn't
+/// re-emit identically — a sign, a decimal point, a leading zero, an
+/// alpha above 255 — returns `None` and the caller keeps the whole tag
+/// as an untyped [`AssTag::Other`] so [`emit`] is byte-stable. The
+/// `\fade` arm is tried first: a `\fade(...)` body has prefix `fade`,
+/// which `paren_args(_, "fad")` rejects, but checking the longer name
+/// first keeps the intent explicit.
+fn classify_fade(tag: &str) -> Option<AssTag> {
+    if let Some(args) = paren_args(tag, "fade") {
+        let p: Vec<&str> = args.split(',').collect();
+        if p.len() != 7 {
+            return None;
+        }
+        return Some(AssTag::Fade(AssFadeSpec::Complex {
+            a1: canon_u8(p[0])?,
+            a2: canon_u8(p[1])?,
+            a3: canon_u8(p[2])?,
+            t1: canon_u32(p[3])?,
+            t2: canon_u32(p[4])?,
+            t3: canon_u32(p[5])?,
+            t4: canon_u32(p[6])?,
+        }));
+    }
+    if let Some(args) = paren_args(tag, "fad") {
+        let (fadein, fadeout) = args.split_once(',')?;
+        return Some(AssTag::Fade(AssFadeSpec::Simple {
+            fadein: canon_u32(fadein)?,
+            fadeout: canon_u32(fadeout)?,
+        }));
+    }
+    None
+}
+
 /// [`canon_decimal_opt`] restricted to a non-negative run: the empty
 /// reset form, or a [`canon_decimal`] run with no leading `-`. Used by
 /// the `\bord` family and the combined `\shad`, which the spec forbids
@@ -1375,6 +1481,24 @@ pub fn emit(tokens: &[AssToken]) -> String {
                             }
                             out.push(')');
                         }
+                        AssTag::Fade(spec) => match spec {
+                            AssFadeSpec::Simple { fadein, fadeout } => {
+                                out.push_str(&format!("\\fad({fadein},{fadeout})"));
+                            }
+                            AssFadeSpec::Complex {
+                                a1,
+                                a2,
+                                a3,
+                                t1,
+                                t2,
+                                t3,
+                                t4,
+                            } => {
+                                out.push_str(&format!(
+                                    "\\fade({a1},{a2},{a3},{t1},{t2},{t3},{t4})"
+                                ));
+                            }
+                        },
                         AssTag::Other(body) => {
                             out.push('\\');
                             out.push_str(body);
@@ -1628,6 +1752,109 @@ mod tests {
     }
 
     #[test]
+    fn simple_fade_spec_example_types() {
+        // Aegisub reference example: "\fad(1200,250)" — "Fade in the
+        // line in the first 1.2 seconds it is to be displayed, and fade
+        // it out for the last one quarter second it is displayed."
+        let s = "{\\fad(1200,250)}hi";
+        assert_eq!(
+            tokenize(s)[0],
+            AssToken::Override(vec![AssTag::Fade(AssFadeSpec::Simple {
+                fadein: 1200,
+                fadeout: 250,
+            })])
+        );
+        roundtrip(s);
+        // Either end may be 0 "to not have any fade effect on that end".
+        assert_eq!(
+            tokenize("{\\fad(0,500)}"),
+            vec![AssToken::Override(vec![AssTag::Fade(
+                AssFadeSpec::Simple {
+                    fadein: 0,
+                    fadeout: 500,
+                }
+            )])]
+        );
+        roundtrip("{\\fad(0,500)}");
+        roundtrip("{\\fad(500,0)}");
+    }
+
+    #[test]
+    fn complex_fade_spec_example_types() {
+        // Aegisub reference example:
+        // "\fade(255,32,224,0,500,2000,2200)" — "Starts invisible,
+        // fades to almost totally opaque, then fades to almost totally
+        // invisible."
+        let s = "{\\fade(255,32,224,0,500,2000,2200)}hi";
+        assert_eq!(
+            tokenize(s)[0],
+            AssToken::Override(vec![AssTag::Fade(AssFadeSpec::Complex {
+                a1: 255,
+                a2: 32,
+                a3: 224,
+                t1: 0,
+                t2: 500,
+                t3: 2000,
+                t4: 2200,
+            })])
+        );
+        roundtrip(s);
+    }
+
+    #[test]
+    fn off_shape_fades_stay_verbatim_other() {
+        // \fade is tried ahead of \fad and the longer name wins, but a
+        // mis-arity, signed, non-integer, or out-of-range value falls
+        // through to a verbatim Other so emit stays byte-stable.
+        for s in [
+            "{\\fad(200)}",                    // simple needs two values
+            "{\\fad(200,300,400)}",            // too many
+            "{\\fad(-200,300)}",               // negative not canonical u32
+            "{\\fad(2.5,300)}",                // non-integer
+            "{\\fad(200, 300)}",               // embedded space
+            "{\\fade(255,32,224,0,500,2000)}", // complex needs seven
+            "{\\fade(256,0,0,0,1,2,3)}",       // alpha above 255
+            "{\\fade(0,0,0,-1,1,2,3)}",        // negative time
+        ] {
+            let body = &s[2..s.len() - 1];
+            assert_eq!(
+                tokenize(s),
+                vec![AssToken::Override(vec![AssTag::Other(body.into())])],
+                "for {s:?}"
+            );
+            roundtrip(s);
+        }
+    }
+
+    #[test]
+    fn fade_distinct_from_font_and_flag_prefixes() {
+        // \fad / \fade share the \f prefix with the font-metric family
+        // (\fs, \fr, \fn, …) and the \fade body starts with \fad; the
+        // exact-prefix paren match keeps all three distinct.
+        let s = "{\\fs28\\fad(100,100)\\fade(0,128,255,0,1,2,3)}x";
+        assert_eq!(
+            tokenize(s)[0],
+            AssToken::Override(vec![
+                AssTag::FontSize(Some("28".into())),
+                AssTag::Fade(AssFadeSpec::Simple {
+                    fadein: 100,
+                    fadeout: 100,
+                }),
+                AssTag::Fade(AssFadeSpec::Complex {
+                    a1: 0,
+                    a2: 128,
+                    a3: 255,
+                    t1: 0,
+                    t2: 1,
+                    t3: 2,
+                    t4: 3,
+                }),
+            ])
+        );
+        roundtrip(s);
+    }
+
+    #[test]
     fn font_tags_type_next_to_typed_position() {
         let s = "{\\pos(320,240)\\fnCourier New\\fs28}x";
         assert_eq!(
@@ -1690,18 +1917,32 @@ mod tests {
 
     #[test]
     fn font_prefix_cousins_not_swallowed() {
-        // \fad / \fade are function tags the \f* family must not absorb.
+        // \fad / \fade share the \f* prefix but are the typed fade
+        // family (see the fade tests), not a font-metric tag — the
+        // font-metric family must not absorb them.
         // (\bord / \shad are the typed border / shadow family — see the
         // border_shadow tests; \be / \blur are the typed blur family —
         // see the blur tests.)
-        for body in ["fad(1,2)", "fade(1,2,3,4,5,6,7)"] {
-            let s = format!("{{\\{body}}}");
-            assert_eq!(
-                tokenize(&s)[0],
-                AssToken::Override(vec![AssTag::Other(body.into())]),
-                "{body} must stay verbatim"
-            );
-        }
+        assert_eq!(
+            tokenize("{\\fad(1,2)}")[0],
+            AssToken::Override(vec![AssTag::Fade(AssFadeSpec::Simple {
+                fadein: 1,
+                fadeout: 2,
+            })])
+        );
+        assert_eq!(
+            tokenize("{\\fade(1,2,3,4,5,6,7)}")[0],
+            AssToken::Override(vec![AssTag::Fade(AssFadeSpec::Complex {
+                a1: 1,
+                a2: 2,
+                a3: 3,
+                t1: 4,
+                t2: 5,
+                t3: 6,
+                t4: 7,
+            })])
+        );
+        roundtrip("{\\fad(1,2)}{\\fade(1,2,3,4,5,6,7)}");
     }
 
     #[test]

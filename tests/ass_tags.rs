@@ -7,8 +7,8 @@ use oxideav_subtitle::ass_tags::{
     tokenize, AssRotationAxis,
 };
 use oxideav_subtitle::{
-    AssBlurKind, AssBorderAxis, AssClipShape, AssColorTarget, AssKaraokeKind, AssTag, AssToken,
-    WrapStyle,
+    AssBlurKind, AssBorderAxis, AssClipShape, AssColorTarget, AssFadeSpec, AssKaraokeKind, AssTag,
+    AssToken, WrapStyle,
 };
 
 #[test]
@@ -269,11 +269,16 @@ fn off_shape_font_params_stay_verbatim() {
             "{body} must stay an untyped Other"
         );
     }
-    // \fade / \fad are function tags, not the \fs* family — verbatim.
+    // \fade / \fad are the typed fade family, not the \fs* font-metric
+    // family — the \f* prefix match must not absorb them.
     let fade = "{\\fad(200,200)}x";
+    assert_eq!(emit(&tokenize(fade)), fade, "fad must round-trip");
     assert_eq!(
         tokenize(fade)[0],
-        AssToken::Override(vec![AssTag::Other("fad(200,200)".into())])
+        AssToken::Override(vec![AssTag::Fade(AssFadeSpec::Simple {
+            fadein: 200,
+            fadeout: 200,
+        })])
     );
 }
 
@@ -618,4 +623,69 @@ fn iclip_does_not_collide_with_italic_flag() {
             },
         ])
     );
+}
+
+#[test]
+fn simple_fade_is_typed() {
+    // Aegisub reference, "Fade": \fad(<fadein>,<fadeout>) — worked
+    // example \fad(1200,250), "Fade in the line in the first 1.2 seconds
+    // … and fade it out for the last one quarter second".
+    let text = "{\\fad(1200,250)}Title card";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text);
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![AssTag::Fade(AssFadeSpec::Simple {
+            fadein: 1200,
+            fadeout: 250,
+        })])
+    );
+}
+
+#[test]
+fn complex_fade_is_typed() {
+    // Aegisub reference, "Fade (complex)":
+    // \fade(<a1>,<a2>,<a3>,<t1>,<t2>,<t3>,<t4>) — worked example
+    // \fade(255,32,224,0,500,2000,2200), "Starts invisible, fades to
+    // almost totally opaque, then fades to almost totally invisible".
+    let text = "{\\fade(255,32,224,0,500,2000,2200)}Subtitle";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text);
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![AssTag::Fade(AssFadeSpec::Complex {
+            a1: 255,
+            a2: 32,
+            a3: 224,
+            t1: 0,
+            t2: 500,
+            t3: 2000,
+            t4: 2200,
+        })])
+    );
+}
+
+#[test]
+fn off_shape_fades_stay_verbatim() {
+    // Only the documented argument shapes are typed; everything else
+    // stays an untyped Other so emit is byte-stable.
+    for body in [
+        "fad(200)",                    // simple needs two values
+        "fad(200,300,400)",            // too many
+        "fad(-200,300)",               // negative time
+        "fad(2.5,300)",                // non-integer time
+        "fade(255,32,224,0,500,2000)", // complex needs seven
+        "fade(256,0,0,0,1,2,3)",       // alpha above 255
+        "fade(0,0,0,-1,1,2,3)",        // negative time
+        "fad(200,200)x",               // trailing text after close paren
+    ] {
+        let text = format!("{{\\{body}}}y");
+        let tokens = tokenize(&text);
+        assert_eq!(emit(&tokens), text, "{body} must round-trip verbatim");
+        assert_eq!(
+            tokens[0],
+            AssToken::Override(vec![AssTag::Other(body.into())]),
+            "{body} must stay an untyped Other"
+        );
+    }
 }
