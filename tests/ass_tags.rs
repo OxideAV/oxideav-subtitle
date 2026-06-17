@@ -43,7 +43,9 @@ fn realistic_dialogue_text_round_trips_byte_stable() {
     )));
     assert_eq!(decode_bgr_hex("D8F8F8"), Some((0xF8, 0xF8, 0xD8)));
     // … the typeset block's position + numpad alignment (typed,
-    // alongside the verbatim \t transform in the same brace set) …
+    // alongside the typed \t transform — its t1/t2 window plus the two
+    // \fscx / \fscy style modifiers parsed recursively — in the same
+    // brace set) …
     assert_eq!(
         tokens[0],
         AssToken::Override(vec![
@@ -54,7 +56,21 @@ fn realistic_dialogue_text_round_trips_byte_stable() {
                 short: false,
                 hex: Some("D8F8F8".into()),
             },
-            AssTag::Other("t(0,500,\\fscx120\\fscy120)".into()),
+            AssTag::Transform {
+                t1: Some(0),
+                t2: Some(500),
+                accel: None,
+                modifiers: vec![
+                    AssTag::FontScale {
+                        x_axis: true,
+                        percent: Some("120".into()),
+                    },
+                    AssTag::FontScale {
+                        x_axis: false,
+                        percent: Some("120".into()),
+                    },
+                ],
+            },
         ])
     );
     // … the karaoke syllable timings (centiseconds) …

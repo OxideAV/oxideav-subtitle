@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA typed `\t(...)` animated-transform override tag in
+  `ass_tags`. `\t` parses to `AssTag::Transform { t1, t2, accel,
+  modifiers }` across the four documented arities — `\t(<modifiers>)`,
+  `\t(<accel>,<modifiers>)`, `\t(<t1>,<t2>,<modifiers>)`, and
+  `\t(<t1>,<t2>,<accel>,<modifiers>)`. Per the Aegisub override-tag
+  reference the *style modifiers* "are other override tags as specified
+  in this reference"; they are parsed recursively into nested `AssTag`
+  values and re-emit through the same per-tag emitter (factored out of
+  `emit` as `emit_tag`), so a `\t(0,1000,\fscx200\fscy200)` round-trips
+  byte-stably with both `\fscx` / `\fscy` typed as `FontScale`. The
+  leading numbers are split from the modifiers at the first top-level
+  backslash: `t1` / `t2` are non-negative integer milliseconds
+  "relative to the start time of the line" (present or absent together),
+  and `accel` is a non-negative decimal kept verbatim ("can be
+  non-integer", `1` is linear) decoded with `decode_decimal`. Off-shape
+  spellings — a `\t()` with no modifiers, a leading-argument count
+  outside 1–3, a signed or non-integer time, a negative or
+  non-canonical accel, trailing text after the close paren — stay an
+  untyped `AssTag::Other` so `emit` is byte-stable. The rewritten test
+  `transform_t1_t2_modifiers_types` (formerly asserting the verbatim
+  `AssTag::Other`) plus three new tests cover all four arities, the
+  off-shape verbatim set, and the nested rectangle `\clip` modifier.
 - ASS / SSA typed fade override tags in `ass_tags`. `\fad` and `\fade`
   parse to `AssTag::Fade(spec)` over the new `AssFadeSpec` enum
   (re-exported at the crate root). Per the Aegisub override-tag

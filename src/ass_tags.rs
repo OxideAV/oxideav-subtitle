@@ -40,11 +40,12 @@
 //! `\frx` / `\fry` / `\frz` plus the bare `\fr`), the border / shadow
 //! family (`\bord` / `\xbord` / `\ybord`, `\shad` / `\xshad` /
 //! `\yshad`), the edge-blur family (`\be` / `\blur`), the clip family
-//! (`\clip` / `\iclip`), and the fade family (`\fad` / `\fade`).
-//! Every other tag is preserved verbatim in [`AssTag::Other`], so
-//! [`emit`] reproduces the original text byte-for-byte and no
-//! information is dropped. Typed coverage of the remaining tag set
-//! (the `\t(...)` animated-transform tag) is follow-up material.
+//! (`\clip` / `\iclip`), the fade family (`\fad` / `\fade`), and the
+//! `\t(...)` animated-transform tag (its *style modifiers* parsed
+//! recursively into nested [`AssTag`] values across all four documented
+//! arities). Every other tag is preserved verbatim in
+//! [`AssTag::Other`], so [`emit`] reproduces the original text
+//! byte-for-byte and no information is dropped.
 
 use crate::ass_script_info::WrapStyle;
 
@@ -530,10 +531,45 @@ pub enum AssTag {
     /// above 255, trailing text after the closing parenthesis) stays an
     /// untyped [`AssTag::Other`] so [`emit`] is byte-stable.
     Fade(AssFadeSpec),
+    /// `\t(...)` — a gradual, animated transformation from one style to
+    /// another. Per the Aegisub override-tag reference the *style
+    /// modifiers* "are other override tags as specified in this
+    /// reference"; they are parsed recursively into [`AssTag`] values
+    /// (`modifiers`) so a `\t(...)` carrying nested overrides round-trips
+    /// byte-stably through the same per-tag emitter.
+    ///
+    /// The four documented arities map onto the optional fields:
+    ///
+    /// * `\t(<modifiers>)` — `t1`/`t2`/`accel` all `None`.
+    /// * `\t(<accel>,<modifiers>)` — `accel` set, `t1`/`t2` `None`.
+    /// * `\t(<t1>,<t2>,<modifiers>)` — `t1`/`t2` set, `accel` `None`.
+    /// * `\t(<t1>,<t2>,<accel>,<modifiers>)` — all set.
+    ///
+    /// `t1`/`t2` are non-negative integer millisecond times "relative to
+    /// the start time of the line" and are always present or absent
+    /// together. `accel` is a non-negative decimal kept verbatim as a
+    /// string (it "can be non-integer"; `1` is linear) — decode it with
+    /// [`decode_decimal`]. Any off-shape spelling — a `\t()` with no
+    /// modifiers, a wrong leading-argument arity, a signed / non-integer
+    /// time, a negative or non-canonical accel, trailing text after the
+    /// closing parenthesis — stays an untyped [`AssTag::Other`] so
+    /// [`emit`] is byte-stable.
+    Transform {
+        /// First keyframe time in milliseconds, or `None` for the
+        /// no-time arities (the transform runs over the whole line).
+        t1: Option<u32>,
+        /// Second keyframe time in milliseconds; present iff `t1` is.
+        t2: Option<u32>,
+        /// Optional acceleration exponent, verbatim (`1` is linear).
+        accel: Option<String>,
+        /// The animated *style modifiers*, parsed recursively.
+        modifiers: Vec<AssTag>,
+    },
     /// Any other tag, kept verbatim — the full body after the
-    /// backslash, including parenthesised parameter lists
-    /// (`t(0,1000,\fscx200)`, a `\fad` / `\fade` whose arguments fall
-    /// outside the typed shape, …).
+    /// backslash, including parenthesised parameter lists (a `\fad` /
+    /// `\fade` whose arguments fall outside the typed shape, a `\t(...)`
+    /// whose argument shape isn't one of the four documented arities,
+    /// …).
     Other(String),
     /// Non-tag text inside the block, kept verbatim. The Aegisub
     /// reference: "Any unrecognized text within override blocks is
@@ -674,6 +710,9 @@ fn classify(tag: &str) -> AssTag {
         return typed;
     }
     if let Some(typed) = classify_fade(tag) {
+        return typed;
+    }
+    if let Some(typed) = classify_transform(tag) {
         return typed;
     }
     let (head, arg) = match tag.chars().next() {
@@ -1126,6 +1165,71 @@ fn classify_fade(tag: &str) -> Option<AssTag> {
     None
 }
 
+/// Try the animated-transform tag `\t(...)`.
+///
+/// Per the Aegisub override-tag reference `\t` has four arities:
+/// `\t(<modifiers>)`, `\t(<accel>,<modifiers>)`,
+/// `\t(<t1>,<t2>,<modifiers>)`, and `\t(<t1>,<t2>,<accel>,<modifiers>)`.
+/// The leading numeric arguments are separated from the *style
+/// modifiers* by the first top-level backslash (the modifiers "are
+/// other override tags"), so the argument list is split there: the
+/// prefix before the first `\` is the comma-separated leading numbers,
+/// and the remainder (which must start with `\`) is the modifiers run.
+///
+/// `t1`/`t2` are canonical non-negative integer milliseconds (via
+/// [`canon_u32`]); `accel` is a canonical non-negative decimal (via
+/// [`canon_decimal`], no leading `-`) kept verbatim. The modifiers are
+/// parsed recursively with [`parse_block`]. Any off-shape spelling — no
+/// modifiers at all, a leading-argument count other than 0/1/2/3, a
+/// signed or non-integer time, a non-canonical or negative accel — makes
+/// the whole tag stay an untyped [`AssTag::Other`] so [`emit`] is
+/// byte-stable. The match is the exact `t(` prefix so the `\t` toggle
+/// can't be confused with the typed `\fs` / `\fad` families above.
+fn classify_transform(tag: &str) -> Option<AssTag> {
+    let args = paren_args(tag, "t")?;
+    // The style modifiers begin at the first backslash; everything
+    // before it is the comma-separated leading numeric arguments.
+    let split = args.find('\\')?;
+    let lead = &args[..split];
+    let mods_str = &args[split..];
+    let modifiers = parse_block(mods_str);
+    // A bare `\t(\fs20)` has an empty lead; otherwise the lead is a
+    // trailing-comma-terminated list of 1..=3 numbers.
+    let (t1, t2, accel) = if lead.is_empty() {
+        (None, None, None)
+    } else {
+        let lead = lead.strip_suffix(',')?;
+        let parts: Vec<&str> = lead.split(',').collect();
+        match parts.as_slice() {
+            // \t(<accel>,<modifiers>)
+            [a] => (None, None, Some(canon_nonneg_decimal(a)?)),
+            // \t(<t1>,<t2>,<modifiers>)
+            [a, b] => (Some(canon_u32(a)?), Some(canon_u32(b)?), None),
+            // \t(<t1>,<t2>,<accel>,<modifiers>)
+            [a, b, c] => (
+                Some(canon_u32(a)?),
+                Some(canon_u32(b)?),
+                Some(canon_nonneg_decimal(c)?),
+            ),
+            _ => return None,
+        }
+    };
+    Some(AssTag::Transform {
+        t1,
+        t2,
+        accel,
+        modifiers,
+    })
+}
+
+/// A canonical non-negative decimal run, returned verbatim. Rejects a
+/// leading `-` (the `\t` acceleration "value … between 0 and 1" / ">1"
+/// is never negative) and any spelling [`decode_decimal`] couldn't
+/// reproduce, so [`emit`] stays byte-stable.
+fn canon_nonneg_decimal(s: &str) -> Option<String> {
+    (!s.starts_with('-') && canon_decimal(s)).then(|| s.to_string())
+}
+
 /// [`canon_decimal_opt`] restricted to a non-negative run: the empty
 /// reset form, or a [`canon_decimal`] run with no leading `-`. Used by
 /// the `\bord` family and the combined `\shad`, which the spec forbids
@@ -1314,203 +1418,228 @@ pub fn emit(tokens: &[AssToken]) -> String {
             AssToken::Override(tags) => {
                 out.push('{');
                 for tag in tags {
-                    match tag {
-                        AssTag::Bold(b) => {
-                            out.push_str("\\b");
-                            if let Some(w) = b {
-                                out.push_str(&w.to_string());
-                            }
-                        }
-                        AssTag::Italic(f) => push_flag(&mut out, 'i', *f),
-                        AssTag::Underline(f) => push_flag(&mut out, 'u', *f),
-                        AssTag::Strikeout(f) => push_flag(&mut out, 's', *f),
-                        AssTag::Color { target, short, hex } => {
-                            out.push('\\');
-                            if *short && *target == AssColorTarget::Primary {
-                                out.push('c');
-                            } else {
-                                out.push(target_digit(*target));
-                                out.push('c');
-                            }
-                            push_amp_hex(&mut out, hex);
-                        }
-                        AssTag::Alpha { target, hex } => {
-                            out.push('\\');
-                            match target {
-                                None => out.push_str("alpha"),
-                                Some(t) => {
-                                    out.push(target_digit(*t));
-                                    out.push('a');
-                                }
-                            }
-                            push_amp_hex(&mut out, hex);
-                        }
-                        AssTag::AlignNumpad(v) => {
-                            out.push_str("\\an");
-                            if let Some(v) = v {
-                                out.push_str(&v.to_string());
-                            }
-                        }
-                        AssTag::AlignLegacy(v) => {
-                            out.push_str("\\a");
-                            if let Some(v) = v {
-                                out.push_str(&v.to_string());
-                            }
-                        }
-                        AssTag::Karaoke { kind, centisec } => {
-                            out.push_str(match kind {
-                                AssKaraokeKind::Instant => "\\k",
-                                AssKaraokeKind::SweepCap => "\\K",
-                                AssKaraokeKind::Sweep => "\\kf",
-                                AssKaraokeKind::Outline => "\\ko",
-                            });
-                            out.push_str(&centisec.to_string());
-                        }
-                        AssTag::Pos { x, y } => {
-                            out.push_str(&format!("\\pos({x},{y})"));
-                        }
-                        AssTag::Org { x, y } => {
-                            out.push_str(&format!("\\org({x},{y})"));
-                        }
-                        AssTag::FontName(name) => {
-                            out.push_str("\\fn");
-                            if let Some(n) = name {
-                                out.push_str(n);
-                            }
-                        }
-                        AssTag::FontSize(v) => {
-                            out.push_str("\\fs");
-                            if let Some(v) = v {
-                                out.push_str(v);
-                            }
-                        }
-                        AssTag::FontScale { x_axis, percent } => {
-                            out.push_str(if *x_axis { "\\fscx" } else { "\\fscy" });
-                            if let Some(p) = percent {
-                                out.push_str(p);
-                            }
-                        }
-                        AssTag::FontSpacing(v) => {
-                            out.push_str("\\fsp");
-                            if let Some(v) = v {
-                                out.push_str(v);
-                            }
-                        }
-                        AssTag::FontEncoding(v) => {
-                            out.push_str("\\fe");
-                            if let Some(v) = v {
-                                out.push_str(v);
-                            }
-                        }
-                        AssTag::Rotation {
-                            axis,
-                            bare,
-                            degrees,
-                        } => {
-                            out.push_str("\\fr");
-                            if !*bare {
-                                out.push(match axis {
-                                    AssRotationAxis::X => 'x',
-                                    AssRotationAxis::Y => 'y',
-                                    AssRotationAxis::Z => 'z',
-                                });
-                            }
-                            if let Some(d) = degrees {
-                                out.push_str(d);
-                            }
-                        }
-                        AssTag::Border { axis, size } => {
-                            out.push('\\');
-                            match axis {
-                                AssBorderAxis::Both => {}
-                                AssBorderAxis::X => out.push('x'),
-                                AssBorderAxis::Y => out.push('y'),
-                            }
-                            out.push_str("bord");
-                            if let Some(s) = size {
-                                out.push_str(s);
-                            }
-                        }
-                        AssTag::Shadow { axis, depth } => {
-                            out.push('\\');
-                            match axis {
-                                AssBorderAxis::Both => {}
-                                AssBorderAxis::X => out.push('x'),
-                                AssBorderAxis::Y => out.push('y'),
-                            }
-                            out.push_str("shad");
-                            if let Some(d) = depth {
-                                out.push_str(d);
-                            }
-                        }
-                        AssTag::Blur { kind, strength } => {
-                            out.push_str(match kind {
-                                AssBlurKind::Edge => "\\be",
-                                AssBlurKind::Gaussian => "\\blur",
-                            });
-                            if let Some(s) = strength {
-                                out.push_str(s);
-                            }
-                        }
-                        AssTag::Move {
-                            x1,
-                            y1,
-                            x2,
-                            y2,
-                            times,
-                        } => {
-                            out.push_str(&format!("\\move({x1},{y1},{x2},{y2}"));
-                            if let Some((t1, t2)) = times {
-                                out.push_str(&format!(",{t1},{t2}"));
-                            }
-                            out.push(')');
-                        }
-                        AssTag::Clip { inverse, shape } => {
-                            out.push('\\');
-                            out.push_str(if *inverse { "iclip(" } else { "clip(" });
-                            match shape {
-                                AssClipShape::Rectangle { x1, y1, x2, y2 } => {
-                                    out.push_str(&format!("{x1},{y1},{x2},{y2}"));
-                                }
-                                AssClipShape::Drawing { scale, commands } => {
-                                    if let Some(s) = scale {
-                                        out.push_str(&format!("{s},"));
-                                    }
-                                    out.push_str(commands);
-                                }
-                            }
-                            out.push(')');
-                        }
-                        AssTag::Fade(spec) => match spec {
-                            AssFadeSpec::Simple { fadein, fadeout } => {
-                                out.push_str(&format!("\\fad({fadein},{fadeout})"));
-                            }
-                            AssFadeSpec::Complex {
-                                a1,
-                                a2,
-                                a3,
-                                t1,
-                                t2,
-                                t3,
-                                t4,
-                            } => {
-                                out.push_str(&format!(
-                                    "\\fade({a1},{a2},{a3},{t1},{t2},{t3},{t4})"
-                                ));
-                            }
-                        },
-                        AssTag::Other(body) => {
-                            out.push('\\');
-                            out.push_str(body);
-                        }
-                        AssTag::Comment(s) => out.push_str(s),
-                    }
+                    emit_tag(&mut out, tag);
                 }
                 out.push('}');
             }
         }
     }
     out
+}
+
+/// Re-emit one typed tag (the leading `\` plus its body) into `out`.
+/// Factored out of [`emit`] so the `\t(...)` animated-transform tag can
+/// re-emit its nested *style modifiers* through the same per-tag logic,
+/// keeping the whole transform byte-stable.
+fn emit_tag(out: &mut String, tag: &AssTag) {
+    match tag {
+        AssTag::Bold(b) => {
+            out.push_str("\\b");
+            if let Some(w) = b {
+                out.push_str(&w.to_string());
+            }
+        }
+        AssTag::Italic(f) => push_flag(out, 'i', *f),
+        AssTag::Underline(f) => push_flag(out, 'u', *f),
+        AssTag::Strikeout(f) => push_flag(out, 's', *f),
+        AssTag::Color { target, short, hex } => {
+            out.push('\\');
+            if *short && *target == AssColorTarget::Primary {
+                out.push('c');
+            } else {
+                out.push(target_digit(*target));
+                out.push('c');
+            }
+            push_amp_hex(out, hex);
+        }
+        AssTag::Alpha { target, hex } => {
+            out.push('\\');
+            match target {
+                None => out.push_str("alpha"),
+                Some(t) => {
+                    out.push(target_digit(*t));
+                    out.push('a');
+                }
+            }
+            push_amp_hex(out, hex);
+        }
+        AssTag::AlignNumpad(v) => {
+            out.push_str("\\an");
+            if let Some(v) = v {
+                out.push_str(&v.to_string());
+            }
+        }
+        AssTag::AlignLegacy(v) => {
+            out.push_str("\\a");
+            if let Some(v) = v {
+                out.push_str(&v.to_string());
+            }
+        }
+        AssTag::Karaoke { kind, centisec } => {
+            out.push_str(match kind {
+                AssKaraokeKind::Instant => "\\k",
+                AssKaraokeKind::SweepCap => "\\K",
+                AssKaraokeKind::Sweep => "\\kf",
+                AssKaraokeKind::Outline => "\\ko",
+            });
+            out.push_str(&centisec.to_string());
+        }
+        AssTag::Pos { x, y } => {
+            out.push_str(&format!("\\pos({x},{y})"));
+        }
+        AssTag::Org { x, y } => {
+            out.push_str(&format!("\\org({x},{y})"));
+        }
+        AssTag::FontName(name) => {
+            out.push_str("\\fn");
+            if let Some(n) = name {
+                out.push_str(n);
+            }
+        }
+        AssTag::FontSize(v) => {
+            out.push_str("\\fs");
+            if let Some(v) = v {
+                out.push_str(v);
+            }
+        }
+        AssTag::FontScale { x_axis, percent } => {
+            out.push_str(if *x_axis { "\\fscx" } else { "\\fscy" });
+            if let Some(p) = percent {
+                out.push_str(p);
+            }
+        }
+        AssTag::FontSpacing(v) => {
+            out.push_str("\\fsp");
+            if let Some(v) = v {
+                out.push_str(v);
+            }
+        }
+        AssTag::FontEncoding(v) => {
+            out.push_str("\\fe");
+            if let Some(v) = v {
+                out.push_str(v);
+            }
+        }
+        AssTag::Rotation {
+            axis,
+            bare,
+            degrees,
+        } => {
+            out.push_str("\\fr");
+            if !*bare {
+                out.push(match axis {
+                    AssRotationAxis::X => 'x',
+                    AssRotationAxis::Y => 'y',
+                    AssRotationAxis::Z => 'z',
+                });
+            }
+            if let Some(d) = degrees {
+                out.push_str(d);
+            }
+        }
+        AssTag::Border { axis, size } => {
+            out.push('\\');
+            match axis {
+                AssBorderAxis::Both => {}
+                AssBorderAxis::X => out.push('x'),
+                AssBorderAxis::Y => out.push('y'),
+            }
+            out.push_str("bord");
+            if let Some(s) = size {
+                out.push_str(s);
+            }
+        }
+        AssTag::Shadow { axis, depth } => {
+            out.push('\\');
+            match axis {
+                AssBorderAxis::Both => {}
+                AssBorderAxis::X => out.push('x'),
+                AssBorderAxis::Y => out.push('y'),
+            }
+            out.push_str("shad");
+            if let Some(d) = depth {
+                out.push_str(d);
+            }
+        }
+        AssTag::Blur { kind, strength } => {
+            out.push_str(match kind {
+                AssBlurKind::Edge => "\\be",
+                AssBlurKind::Gaussian => "\\blur",
+            });
+            if let Some(s) = strength {
+                out.push_str(s);
+            }
+        }
+        AssTag::Move {
+            x1,
+            y1,
+            x2,
+            y2,
+            times,
+        } => {
+            out.push_str(&format!("\\move({x1},{y1},{x2},{y2}"));
+            if let Some((t1, t2)) = times {
+                out.push_str(&format!(",{t1},{t2}"));
+            }
+            out.push(')');
+        }
+        AssTag::Clip { inverse, shape } => {
+            out.push('\\');
+            out.push_str(if *inverse { "iclip(" } else { "clip(" });
+            match shape {
+                AssClipShape::Rectangle { x1, y1, x2, y2 } => {
+                    out.push_str(&format!("{x1},{y1},{x2},{y2}"));
+                }
+                AssClipShape::Drawing { scale, commands } => {
+                    if let Some(s) = scale {
+                        out.push_str(&format!("{s},"));
+                    }
+                    out.push_str(commands);
+                }
+            }
+            out.push(')');
+        }
+        AssTag::Fade(spec) => match spec {
+            AssFadeSpec::Simple { fadein, fadeout } => {
+                out.push_str(&format!("\\fad({fadein},{fadeout})"));
+            }
+            AssFadeSpec::Complex {
+                a1,
+                a2,
+                a3,
+                t1,
+                t2,
+                t3,
+                t4,
+            } => {
+                out.push_str(&format!("\\fade({a1},{a2},{a3},{t1},{t2},{t3},{t4})"));
+            }
+        },
+        AssTag::Transform {
+            t1,
+            t2,
+            accel,
+            modifiers,
+        } => {
+            out.push_str("\\t(");
+            if let (Some(t1), Some(t2)) = (t1, t2) {
+                out.push_str(&format!("{t1},{t2},"));
+            }
+            if let Some(a) = accel {
+                out.push_str(a);
+                out.push(',');
+            }
+            for m in modifiers {
+                emit_tag(out, m);
+            }
+            out.push(')');
+        }
+        AssTag::Other(body) => {
+            out.push('\\');
+            out.push_str(body);
+        }
+        AssTag::Comment(s) => out.push_str(s),
+    }
 }
 
 fn target_digit(target: AssColorTarget) -> char {
@@ -1740,14 +1869,125 @@ mod tests {
     }
 
     #[test]
-    fn complex_tag_with_nested_modifiers_is_one_other() {
-        // \t's parameter list contains backslash modifiers; the whole
-        // parenthesised body is one tag.
+    fn transform_t1_t2_modifiers_types() {
+        // \t(<t1>,<t2>,<modifiers>): the parenthesised body's leading
+        // numbers are the time window, and the backslash run is the
+        // animated style modifiers parsed recursively.
         let s = "{\\t(0,1000,\\fscx200\\fscy200)}grow";
         assert_eq!(
             tokenize(s)[0],
-            AssToken::Override(vec![AssTag::Other("t(0,1000,\\fscx200\\fscy200)".into())])
+            AssToken::Override(vec![AssTag::Transform {
+                t1: Some(0),
+                t2: Some(1000),
+                accel: None,
+                modifiers: vec![
+                    AssTag::FontScale {
+                        x_axis: true,
+                        percent: Some("200".into()),
+                    },
+                    AssTag::FontScale {
+                        x_axis: false,
+                        percent: Some("200".into()),
+                    },
+                ],
+            }])
         );
+        roundtrip(s);
+    }
+
+    #[test]
+    fn transform_all_four_arities_type_and_round_trip() {
+        // \t(<modifiers>) — Aegisub reference example: the text starts
+        // blue and fades to red over the whole line.
+        let modifiers_only = "{\\1c&HFF0000&\\t(\\1c&H0000FF&)}Hello!";
+        match &tokenize(modifiers_only)[0] {
+            AssToken::Override(tags) => match &tags[1] {
+                AssTag::Transform {
+                    t1,
+                    t2,
+                    accel,
+                    modifiers,
+                } => {
+                    assert_eq!((*t1, *t2, accel.clone()), (None, None, None));
+                    assert_eq!(modifiers.len(), 1);
+                    assert!(matches!(modifiers[0], AssTag::Color { .. }));
+                }
+                other => panic!("expected Transform, got {other:?}"),
+            },
+            other => panic!("expected Override, got {other:?}"),
+        }
+        roundtrip(modifiers_only);
+
+        // \t(<accel>,<modifiers>) — a single leading decimal is the
+        // acceleration exponent, kept verbatim.
+        let accel = "{\\t(0.5,\\frz360)}spin";
+        assert_eq!(
+            tokenize(accel)[0],
+            AssToken::Override(vec![AssTag::Transform {
+                t1: None,
+                t2: None,
+                accel: Some("0.5".into()),
+                modifiers: vec![AssTag::Rotation {
+                    axis: AssRotationAxis::Z,
+                    bare: false,
+                    degrees: Some("360".into()),
+                }],
+            }])
+        );
+        roundtrip(accel);
+
+        // \t(<t1>,<t2>,<accel>,<modifiers>) — full four-argument form.
+        let full = "{\\t(100,900,2,\\fs40)}grow";
+        assert_eq!(
+            tokenize(full)[0],
+            AssToken::Override(vec![AssTag::Transform {
+                t1: Some(100),
+                t2: Some(900),
+                accel: Some("2".into()),
+                modifiers: vec![AssTag::FontSize(Some("40".into()))],
+            }])
+        );
+        roundtrip(full);
+    }
+
+    #[test]
+    fn transform_off_shape_stays_verbatim() {
+        // Each off-shape spelling stays an untyped Other and re-emits
+        // byte-for-byte.
+        for body in [
+            "t(0,1000)",            // no modifiers at all
+            "t()",                  // empty argument list
+            "t(0,1000,2,3,\\fs40)", // too many leading numbers
+            "t(-0.5,\\frz360)",     // negative accel
+            "t(+1,\\fs40)",         // signed time
+            "t(0,1000,\\fs40)x",    // trailing text after close paren
+        ] {
+            let s = format!("{{\\{body}}}");
+            assert_eq!(
+                tokenize(&s)[0],
+                AssToken::Override(vec![AssTag::Other(body.into())]),
+                "expected {body} verbatim",
+            );
+            roundtrip(&s);
+        }
+    }
+
+    #[test]
+    fn transform_nested_clip_rectangle_round_trips() {
+        // The Aegisub note: only the rectangle \clip can be animated.
+        // The nested \clip rides through as a recursively-parsed Clip
+        // modifier and re-emits byte-stably.
+        let s = "{\\t(\\clip(0,0,640,360))}reveal";
+        match &tokenize(s)[0] {
+            AssToken::Override(tags) => match &tags[0] {
+                AssTag::Transform { modifiers, .. } => {
+                    assert_eq!(modifiers.len(), 1);
+                    assert!(matches!(modifiers[0], AssTag::Clip { inverse: false, .. }));
+                }
+                other => panic!("expected Transform, got {other:?}"),
+            },
+            other => panic!("expected Override, got {other:?}"),
+        }
         roundtrip(s);
     }
 

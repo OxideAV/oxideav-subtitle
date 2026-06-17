@@ -229,21 +229,40 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   close paren keeps the whole tag verbatim `AssTag::Other`. The `\fade`
   arm is tried ahead of `\fad`, and the exact-prefix paren match keeps
   both distinct from the `\f*` font-metric family.
-* Every other tag — `\t(...)` transforms whose parenthesised argument
-  carries nested backslash modifiers, drawing-mode `\p` — is preserved
-  verbatim as `AssTag::Other`, and
-  non-tag text inside a block becomes `AssTag::Comment`, so
-  `emit(&tokenize(s)) == s` byte-for-byte on every input (unterminated
-  `{` and unrecognised backslash sequences stay literal text).
+* The animated-transform tag is typed: `\t(...)` parses to
+  `AssTag::Transform { t1, t2, accel, modifiers }` across the four
+  documented arities — `\t(<modifiers>)`, `\t(<accel>,<modifiers>)`,
+  `\t(<t1>,<t2>,<modifiers>)`, and `\t(<t1>,<t2>,<accel>,<modifiers>)`.
+  The leading numeric arguments are separated from the *style modifiers*
+  ("other override tags as specified in this reference") at the first
+  top-level backslash, and the modifiers run is parsed recursively into
+  nested `AssTag` values that re-emit through the same per-tag emitter,
+  so a `\t(0,1000,\fscx200\fscy200)` round-trips byte-stably with both
+  `\fscx` / `\fscy` typed as `FontScale`. `t1` / `t2` are non-negative
+  integer milliseconds "relative to the start time of the line" (always
+  present or absent together); `accel` is a non-negative decimal kept
+  verbatim ("can be non-integer", `1` is linear) — `decode_decimal`
+  turns it into an `f64`. Off-shape spellings — a `\t()` with no
+  modifiers, a leading-argument count outside 1–3, a signed or
+  non-integer time, a negative or non-canonical accel, trailing text
+  after the close paren — stay an untyped `AssTag::Other`. The nested
+  rectangle `\clip` (the only animatable clip form per the reference)
+  rides through as a recursively-parsed `Clip` modifier.
+* Every other tag — drawing-mode `\p` — is preserved verbatim as
+  `AssTag::Other`, and non-tag text inside a block becomes
+  `AssTag::Comment`, so `emit(&tokenize(s)) == s` byte-for-byte on every
+  input (unterminated `{` and unrecognised backslash sequences stay
+  literal text).
 * The mid-text escapes `\n` (soft break), `\N` (hard break), and `\h`
   (non-breaking hard space) are their own tokens; `plain_text` maps
   them against the script's `WrapStyle` (from the `[Script Info]`
   accessor) — `\n` breaks only in wrap mode 2 and is a regular space
   otherwise, `\N` always breaks, `\h` becomes U+00A0.
 
-Typed coverage of the remaining `\t(...)` animated-transform tag — whose
-parenthesised argument carries nested backslash modifiers — is the
-chain's next material.
+With the `\t(...)` animated-transform tag now typed, the override-tag
+tokenizer covers every tag in the Aegisub reference that carries
+structured arguments; the drawing-mode `\p` vector-path command stream
+(SVG-ish `m` / `l` / `b` / `s` ops) is the chain's next material.
 
 ## ASS / SSA `[Script Info]` typed accessor
 
