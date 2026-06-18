@@ -565,6 +565,28 @@ pub enum AssTag {
         /// The animated *style modifiers*, parsed recursively.
         modifiers: Vec<AssTag>,
     },
+    /// `\p<0/1/..>` — toggle drawing mode. Per the Aegisub reference,
+    /// "Setting this tag to 1 or above enables drawing mode. Text after
+    /// this override block will then be interpreted as drawing
+    /// instructions, and not as actually visible text. Setting this to
+    /// zero disables drawing mode". "When turning on, the value might be
+    /// any integer larger than zero, and will be interpreted as the
+    /// scale, in `2^(value-1)` mode" — so `\p2` halves the coordinate
+    /// resolution and `\p4` scales by 8. `\p0` disables drawing.
+    ///
+    /// The field is the raw non-negative integer (`0` = off); convert it
+    /// to the coordinate divisor with [`drawing_scale_divisor`]. The bare
+    /// `\p` form carries no documented level and stays verbatim untyped
+    /// ([`AssTag::Other`]) — only a canonical digit run types here so
+    /// [`emit`] is byte-stable.
+    Drawing(u32),
+    /// `\pbo<y>` — baseline offset. Per the Aegisub reference, "Defines
+    /// baseline offset for drawing. This is basically an Y offset to all
+    /// coordinates" — `\pbo-50` draws 50 pixels above and `\pbo100` 100
+    /// below. The field is a canonical signed integer. The bare `\pbo`
+    /// form carries no documented value and stays verbatim untyped
+    /// ([`AssTag::Other`]) so [`emit`] is byte-stable.
+    BaselineOffset(i32),
     /// Any other tag, kept verbatim — the full body after the
     /// backslash, including parenthesised parameter lists (a `\fad` /
     /// `\fade` whose arguments fall outside the typed shape, a `\t(...)`
@@ -713,6 +735,9 @@ fn classify(tag: &str) -> AssTag {
         return typed;
     }
     if let Some(typed) = classify_transform(tag) {
+        return typed;
+    }
+    if let Some(typed) = classify_drawing(tag) {
         return typed;
     }
     let (head, arg) = match tag.chars().next() {
@@ -1222,6 +1247,30 @@ fn classify_transform(tag: &str) -> Option<AssTag> {
     })
 }
 
+/// Try the drawing-mode tag family: `\p<0/1/..>` (toggle drawing mode)
+/// and `\pbo<y>` (baseline offset).
+///
+/// `\pbo` is matched ahead of `\p` because the shorter name is a prefix
+/// of the longer; `\pos` / `\pos(...)` were already consumed by the
+/// positioning family above, so the `\p` arm here only sees a digit run.
+/// `\p<level>` takes a canonical non-negative integer (the level "might
+/// be any integer larger than zero" plus the `\p0` off form); `\pbo<y>`
+/// takes a canonical signed integer (the Y offset "might be" negative,
+/// e.g. `\pbo-50`). The bare `\p` / `\pbo` forms carry no documented
+/// value, so they stay verbatim untyped via the `None` arm and [`emit`]
+/// is byte-stable.
+fn classify_drawing(tag: &str) -> Option<AssTag> {
+    if let Some(rest) = tag.strip_prefix("pbo") {
+        // Bare `\pbo` carries no documented value — stays verbatim.
+        return Some(AssTag::BaselineOffset(canon_i32(rest)?));
+    }
+    if let Some(rest) = tag.strip_prefix('p') {
+        // Bare `\p` carries no documented level — stays verbatim.
+        return Some(AssTag::Drawing(canon_u32(rest)?));
+    }
+    None
+}
+
 /// A canonical non-negative decimal run, returned verbatim. Rejects a
 /// leading `-` (the `\t` acceleration "value … between 0 and 1" / ">1"
 /// is never negative) and any spelling [`decode_decimal`] couldn't
@@ -1357,6 +1406,174 @@ pub fn legacy_align_to_numpad(a: u8) -> Option<u8> {
         5..=7 => Some(a + 2),
         9..=11 => Some(a - 5),
         _ => None,
+    }
+}
+
+/// Map an [`AssTag::Drawing`] level to the coordinate divisor it
+/// implies.
+///
+/// Per the Aegisub reference, a level above 1 means the drawing
+/// "resolution is doubled" per step: "the value … will be interpreted as
+/// the scale, in `2^(value-1)` mode". So `\p1` divides by 1 (normal
+/// coordinates), `\p2` by 2 ("drawing to 200,200 will actually draw to
+/// 100,100"), and `\p4` by 8 ("resolution is 8x larger (`2^(4-1)`)").
+/// `\p0` (drawing off) has no coordinate system; this returns `1` for
+/// it as the neutral divisor.
+pub fn drawing_scale_divisor(level: u32) -> f64 {
+    match level {
+        0 | 1 => 1.0,
+        n => 2f64.powi((n - 1) as i32),
+    }
+}
+
+/// A single command in a `\p` vector-drawing command stream (also used
+/// by the vector-overload `\clip` / `\iclip` forms). The ops mirror the
+/// Aegisub drawing-command reference; every coordinate is in
+/// script-resolution pixels (before the `\p<level>` divisor and `\pbo`
+/// baseline offset are applied).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DrawCmd {
+    /// `m <x> <y>` — move the cursor, auto-closing any open shape: "All
+    /// drawing routines must start with this command."
+    Move(f64, f64),
+    /// `n <x> <y>` — move the cursor "without closing the current
+    /// shape".
+    MoveNoClose(f64, f64),
+    /// `l <x> <y> ...` — one or more line segments to successive
+    /// points. "Draws a line from the current cursor position to x,y,
+    /// and moves the cursor there afterwards." Repeated coordinate
+    /// pairs after a single `l` are kept as one command's point list.
+    Line(Vec<(f64, f64)>),
+    /// `b <x1> <y1> <x2> <y2> <x3> <y3> ...` — one or more cubic Bézier
+    /// curves, three control points each (`(x1,y1)` and `(x2,y2)` are
+    /// the control points, `(x3,y3)` the endpoint).
+    Bezier(Vec<(f64, f64)>),
+    /// `s <x1> <y1> .. <xN> <yN>` — a cubic uniform b-spline through the
+    /// listed points. "This must contain at least 3 coordinates".
+    Spline(Vec<(f64, f64)>),
+    /// `p <x> <y>` — extend the b-spline to a further point ("the same
+    /// as adding another pair of coordinates at the end of `s`").
+    SplineExtend(f64, f64),
+    /// `c` — close the b-spline.
+    CloseSpline,
+}
+
+/// Parse a `\p` drawing-command stream into structured [`DrawCmd`]s.
+///
+/// The stream is the verbatim run that appears between `\p<level>` and
+/// `\p0` (or inside the vector-overload `\clip(<drawing>)` form). Tokens
+/// are whitespace-separated: a command letter (`m` / `n` / `l` / `b` /
+/// `s` / `p` / `c`) followed by its coordinate arguments, with
+/// coordinates parsed as decimals (they are commonly fractional under a
+/// `\p2`+ subpixel scale, and may be negative). Per the reference `l`
+/// and `b` accept repeated coordinate groups after a single command
+/// letter, and `s` accepts an arbitrary-length point list.
+///
+/// Returns `None` on any malformed stream — a leading token that isn't a
+/// command letter, a coordinate that isn't a decimal, a `b` whose
+/// coordinate count isn't a positive multiple of three, an `l` / `s`
+/// with too few points, or a stray token after `c`. A well-formed empty
+/// stream (only whitespace) parses to an empty command list.
+pub fn parse_drawing(stream: &str) -> Option<Vec<DrawCmd>> {
+    let mut toks = stream.split_ascii_whitespace().peekable();
+    let mut out = Vec::new();
+    while let Some(letter) = toks.next() {
+        match letter {
+            "m" | "n" | "p" => {
+                let x = parse_draw_coord(toks.next()?)?;
+                let y = parse_draw_coord(toks.next()?)?;
+                out.push(match letter {
+                    "m" => DrawCmd::Move(x, y),
+                    "n" => DrawCmd::MoveNoClose(x, y),
+                    _ => DrawCmd::SplineExtend(x, y),
+                });
+            }
+            "c" => out.push(DrawCmd::CloseSpline),
+            "l" | "b" | "s" => {
+                // Greedily collect the trailing coordinate pairs that
+                // follow this command letter (up to the next letter).
+                let mut pts = Vec::new();
+                while let Some(t) = toks.peek() {
+                    if !t.bytes().next()?.is_ascii_digit()
+                        && !t.starts_with('-')
+                        && !t.starts_with('.')
+                    {
+                        break;
+                    }
+                    let x = parse_draw_coord(toks.next()?)?;
+                    let y = parse_draw_coord(toks.next()?)?;
+                    pts.push((x, y));
+                }
+                match letter {
+                    // `l` needs at least one segment.
+                    "l" if !pts.is_empty() => out.push(DrawCmd::Line(pts)),
+                    // `b` is "cubic", three control points per curve.
+                    "b" if !pts.is_empty() && pts.len() % 3 == 0 => out.push(DrawCmd::Bezier(pts)),
+                    // `s` "must contain at least 3 coordinates".
+                    "s" if pts.len() >= 3 => out.push(DrawCmd::Spline(pts)),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Parse one drawing-command coordinate: a canonical decimal per
+/// [`canon_decimal`] (optional `-`, digits, at most one interior `.`).
+fn parse_draw_coord(tok: &str) -> Option<f64> {
+    decode_decimal(tok)
+}
+
+/// Serialise structured [`DrawCmd`]s back into a `\p` drawing-command
+/// stream. The inverse of [`parse_drawing`] for any stream whose
+/// coordinates were already canonically spelled and singly
+/// space-separated; the round-trip normalises whitespace to single
+/// spaces and re-emits coordinates via their shortest `f64` spelling, so
+/// it is value-stable rather than byte-stable on arbitrary input.
+pub fn emit_drawing(cmds: &[DrawCmd]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let push_pts = |parts: &mut Vec<String>, letter: &str, pts: &[(f64, f64)]| {
+        parts.push(letter.to_string());
+        for (x, y) in pts {
+            parts.push(fmt_coord(*x));
+            parts.push(fmt_coord(*y));
+        }
+    };
+    for cmd in cmds {
+        match cmd {
+            DrawCmd::Move(x, y) => {
+                parts.push("m".into());
+                parts.push(fmt_coord(*x));
+                parts.push(fmt_coord(*y));
+            }
+            DrawCmd::MoveNoClose(x, y) => {
+                parts.push("n".into());
+                parts.push(fmt_coord(*x));
+                parts.push(fmt_coord(*y));
+            }
+            DrawCmd::SplineExtend(x, y) => {
+                parts.push("p".into());
+                parts.push(fmt_coord(*x));
+                parts.push(fmt_coord(*y));
+            }
+            DrawCmd::CloseSpline => parts.push("c".into()),
+            DrawCmd::Line(pts) => push_pts(&mut parts, "l", pts),
+            DrawCmd::Bezier(pts) => push_pts(&mut parts, "b", pts),
+            DrawCmd::Spline(pts) => push_pts(&mut parts, "s", pts),
+        }
+    }
+    parts.join(" ")
+}
+
+/// Format a drawing coordinate using its shortest round-trippable
+/// spelling — an integral value emits without a trailing `.0`.
+fn fmt_coord(v: f64) -> String {
+    if v.fract() == 0.0 && v.is_finite() {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
     }
 }
 
@@ -1633,6 +1850,14 @@ fn emit_tag(out: &mut String, tag: &AssTag) {
                 emit_tag(out, m);
             }
             out.push(')');
+        }
+        AssTag::Drawing(level) => {
+            out.push_str("\\p");
+            out.push_str(&level.to_string());
+        }
+        AssTag::BaselineOffset(y) => {
+            out.push_str("\\pbo");
+            out.push_str(&y.to_string());
         }
         AssTag::Other(body) => {
             out.push('\\');
@@ -2461,8 +2686,12 @@ mod tests {
             ("{\\pos}", "pos"),                         // no parameter list
             ("{\\move(1,2,3,4,5)}", "move(1,2,3,4,5)"), // 5-arg arity
             ("{\\move(1,2,3,4,-5,6)}", "move(1,2,3,4,-5,6)"), // negative ms
-            ("{\\pbo-4}", "pbo-4"),                     // prefix cousins
-            ("{\\p1}", "p1"),
+            // `\p` / `\pbo` drawing-mode cousins: only canonical integer
+            // levels / offsets type; off-shape spellings stay verbatim.
+            ("{\\pbo+4}", "pbo+4"),   // plus sign on baseline offset
+            ("{\\pbo1.5}", "pbo1.5"), // non-integer baseline offset
+            ("{\\p-1}", "p-1"),       // negative drawing level
+            ("{\\p2.0}", "p2.0"),     // non-integer drawing level
         ] {
             assert_eq!(
                 tokenize(s),
@@ -2736,17 +2965,158 @@ mod tests {
 
     #[test]
     fn drawing_mode_block_round_trips() {
-        // Appendix A drawing example shape kept verbatim through Other.
+        // Appendix A drawing example: `\p1` now types to the drawing-mode
+        // toggle, `\p0` disables it, and the command run between them is
+        // ordinary (drawing-instruction) text kept verbatim.
         let s = "{\\p1}m 0 0 l 100 0 100 100 0 100{\\p0}";
         let toks = tokenize(s);
-        assert_eq!(
-            toks[0],
-            AssToken::Override(vec![AssTag::Other("p1".into())])
-        );
+        assert_eq!(toks[0], AssToken::Override(vec![AssTag::Drawing(1)]));
         assert_eq!(
             toks[1],
             AssToken::Text("m 0 0 l 100 0 100 100 0 100".into())
         );
+        assert_eq!(toks[2], AssToken::Override(vec![AssTag::Drawing(0)]));
         roundtrip(s);
+    }
+
+    #[test]
+    fn drawing_toggle_levels_type_and_round_trip() {
+        // "Setting this tag to 1 or above enables drawing mode … the
+        // value might be any integer larger than zero, … `2^(value-1)`".
+        assert_eq!(
+            tokenize("{\\p1}"),
+            vec![AssToken::Override(vec![AssTag::Drawing(1)])]
+        );
+        assert_eq!(
+            tokenize("{\\p2}"),
+            vec![AssToken::Override(vec![AssTag::Drawing(2)])]
+        );
+        assert_eq!(
+            tokenize("{\\p4}"),
+            vec![AssToken::Override(vec![AssTag::Drawing(4)])]
+        );
+        assert_eq!(
+            tokenize("{\\p0}"),
+            vec![AssToken::Override(vec![AssTag::Drawing(0)])]
+        );
+        // Bare `\p` has no documented level — stays verbatim untyped.
+        assert_eq!(
+            tokenize("{\\p}"),
+            vec![AssToken::Override(vec![AssTag::Other("p".into())])]
+        );
+        for s in ["{\\p1}", "{\\p2}", "{\\p4}", "{\\p0}", "{\\p}"] {
+            roundtrip(s);
+        }
+        // The scale divisor: `\p2` → 2, `\p4` → 8, `\p1`/`\p0` → 1.
+        assert_eq!(drawing_scale_divisor(1), 1.0);
+        assert_eq!(drawing_scale_divisor(2), 2.0);
+        assert_eq!(drawing_scale_divisor(4), 8.0);
+        assert_eq!(drawing_scale_divisor(0), 1.0);
+    }
+
+    #[test]
+    fn p_prefix_does_not_swallow_pos_or_pbo() {
+        // `\pos(...)` is the positioning family, not a `\p` drawing tag.
+        assert_eq!(
+            tokenize("{\\pos(320,240)}"),
+            vec![AssToken::Override(vec![AssTag::Pos { x: 320, y: 240 }])]
+        );
+        // `\pbo` is the baseline-offset tag, checked ahead of `\p`.
+        assert_eq!(
+            tokenize("{\\pbo-50}"),
+            vec![AssToken::Override(vec![AssTag::BaselineOffset(-50)])]
+        );
+        assert_eq!(
+            tokenize("{\\pbo100}"),
+            vec![AssToken::Override(vec![AssTag::BaselineOffset(100)])]
+        );
+        // Bare `\pbo` carries no documented value — verbatim untyped.
+        assert_eq!(
+            tokenize("{\\pbo}"),
+            vec![AssToken::Override(vec![AssTag::Other("pbo".into())])]
+        );
+        for s in ["{\\pos(320,240)}", "{\\pbo-50}", "{\\pbo100}", "{\\pbo}"] {
+            roundtrip(s);
+        }
+        // Off-shape level / offset spellings stay verbatim untyped.
+        assert_eq!(
+            tokenize("{\\p-1}"),
+            vec![AssToken::Override(vec![AssTag::Other("p-1".into())])]
+        );
+        assert_eq!(
+            tokenize("{\\pbo+5}"),
+            vec![AssToken::Override(vec![AssTag::Other("pbo+5".into())])]
+        );
+        roundtrip("{\\p-1}");
+        roundtrip("{\\pbo+5}");
+    }
+
+    #[test]
+    fn parse_drawing_spec_examples() {
+        // "Square": m 0 0 l 100 0 100 100 0 100
+        assert_eq!(
+            parse_drawing("m 0 0 l 100 0 100 100 0 100"),
+            Some(vec![
+                DrawCmd::Move(0.0, 0.0),
+                DrawCmd::Line(vec![(100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]),
+            ])
+        );
+        // "Rounded square": m 0 0 s 100 0 100 100 0 100 c
+        assert_eq!(
+            parse_drawing("m 0 0 s 100 0 100 100 0 100 c"),
+            Some(vec![
+                DrawCmd::Move(0.0, 0.0),
+                DrawCmd::Spline(vec![(100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]),
+                DrawCmd::CloseSpline,
+            ])
+        );
+        // "Circle (almost)": m 50 0 b 100 0 100 100 50 100 b 0 100 0 0 50 0
+        assert_eq!(
+            parse_drawing("m 50 0 b 100 0 100 100 50 100 b 0 100 0 0 50 0"),
+            Some(vec![
+                DrawCmd::Move(50.0, 0.0),
+                DrawCmd::Bezier(vec![(100.0, 0.0), (100.0, 100.0), (50.0, 100.0)]),
+                DrawCmd::Bezier(vec![(0.0, 100.0), (0.0, 0.0), (50.0, 0.0)]),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_drawing_extras_and_round_trip() {
+        // `n` move-no-close, `p` spline-extend, fractional + negative
+        // coordinates (common under a `\p2`+ subpixel scale).
+        let stream = "n 1.5 -2 p 3 4 c";
+        assert_eq!(
+            parse_drawing(stream),
+            Some(vec![
+                DrawCmd::MoveNoClose(1.5, -2.0),
+                DrawCmd::SplineExtend(3.0, 4.0),
+                DrawCmd::CloseSpline,
+            ])
+        );
+        // emit_drawing is the value-stable inverse for canonical streams.
+        let cmds = parse_drawing("m 0 0 l 100 0 100 100 0 100").unwrap();
+        assert_eq!(emit_drawing(&cmds), "m 0 0 l 100 0 100 100 0 100");
+        let cmds2 = parse_drawing("n 1.5 -2 p 3 4 c").unwrap();
+        assert_eq!(parse_drawing(&emit_drawing(&cmds2)), Some(cmds2));
+        // An empty / whitespace-only stream is a valid empty drawing.
+        assert_eq!(parse_drawing("   "), Some(vec![]));
+    }
+
+    #[test]
+    fn parse_drawing_rejects_malformed() {
+        // Leading token must be a command letter.
+        assert_eq!(parse_drawing("0 0 l 1 1"), None);
+        // Non-decimal coordinate.
+        assert_eq!(parse_drawing("m a b"), None);
+        // A `b` Bézier needs a positive multiple of three control points.
+        assert_eq!(parse_drawing("m 0 0 b 1 1 2 2"), None);
+        // `l` with no points, `s` with fewer than three.
+        assert_eq!(parse_drawing("l"), None);
+        assert_eq!(parse_drawing("m 0 0 s 1 1 2 2"), None);
+        // An odd trailing coordinate (missing its Y) fails.
+        assert_eq!(parse_drawing("m 0 0 l 1 1 2"), None);
+        // An unknown command letter fails.
+        assert_eq!(parse_drawing("m 0 0 z 1 1"), None);
     }
 }

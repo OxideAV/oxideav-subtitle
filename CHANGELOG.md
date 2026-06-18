@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA typed drawing-mode override tags in `ass_tags`. `\p<0/1/..>`
+  parses to `AssTag::Drawing(u32)` (the level "might be any integer
+  larger than zero, and will be interpreted as the scale, in
+  `2^(value-1)` mode"; `\p0` disables drawing) and `\pbo<y>` to
+  `AssTag::BaselineOffset(i32)` (the "Y offset to all coordinates", which
+  may be negative). `\pbo` is matched ahead of `\p`, and `\pos` /
+  `\pos(...)` are unaffected. Only canonical integer levels / offsets
+  type — a `+` sign, a non-integer, or a negative level keeps the whole
+  tag verbatim `AssTag::Other`, and the bare `\p` / `\pbo` forms (no
+  documented value) likewise stay verbatim, so `emit` is byte-stable.
+  `drawing_scale_divisor` maps a level to its coordinate divisor
+  (`\p2` → 2, `\p4` → 8).
+- ASS / SSA `\p` vector drawing-command stream parser in `ass_tags`.
+  `parse_drawing` / `emit_drawing` decode the verbatim command run that
+  appears between `\p<level>` and `\p0` (and inside the vector-overload
+  `\clip(<drawing>)` form) into a structured `DrawCmd` list — `m` move,
+  `n` move-no-close, `l` line (one or more segments), `b` cubic Bézier
+  (three control points per curve), `s` cubic b-spline (≥3 points),
+  `p` spline-extend, `c` close-spline — per the Aegisub drawing-command
+  reference. Coordinates parse as decimals (commonly fractional under a
+  `\p2`+ subpixel scale, possibly negative); the spec's worked square /
+  rounded-square / circle examples decode exactly. A malformed stream
+  (leading non-letter token, non-decimal coordinate, a `b` whose point
+  count isn't a positive multiple of three, an `l`/`s` with too few
+  points, an unknown command letter) returns `None`.
 - ASS / SSA typed `\t(...)` animated-transform override tag in
   `ass_tags`. `\t` parses to `AssTag::Transform { t1, t2, accel,
   modifiers }` across the four documented arities — `\t(<modifiers>)`,

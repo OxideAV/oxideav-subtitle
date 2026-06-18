@@ -248,21 +248,51 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   after the close paren — stay an untyped `AssTag::Other`. The nested
   rectangle `\clip` (the only animatable clip form per the reference)
   rides through as a recursively-parsed `Clip` modifier.
-* Every other tag — drawing-mode `\p` — is preserved verbatim as
-  `AssTag::Other`, and non-tag text inside a block becomes
-  `AssTag::Comment`, so `emit(&tokenize(s)) == s` byte-for-byte on every
-  input (unterminated `{` and unrecognised backslash sequences stay
-  literal text).
+* The drawing-mode family is typed: `\p<0/1/..>` parses to
+  `AssTag::Drawing(u32)` ("Setting this tag to 1 or above enables drawing
+  mode … the value … will be interpreted as the scale, in `2^(value-1)`
+  mode"; `\p0` disables it) and `\pbo<y>` to `AssTag::BaselineOffset(i32)`
+  (the "Y offset to all coordinates", which may be negative, e.g.
+  `\pbo-50`). `\pbo` is matched ahead of `\p`, and `\pos` / `\pos(...)`
+  are unaffected. Only canonical integer levels / offsets type — a `+`
+  sign, a non-integer, a negative level, or the bare `\p` / `\pbo`
+  (no documented value) keeps the whole tag verbatim `AssTag::Other`.
+  `drawing_scale_divisor` maps a level to its coordinate divisor
+  (`\p2` → 2, `\p4` → 8).
+* Every other tag is preserved verbatim as `AssTag::Other`, and non-tag
+  text inside a block becomes `AssTag::Comment`, so
+  `emit(&tokenize(s)) == s` byte-for-byte on every input (unterminated
+  `{` and unrecognised backslash sequences stay literal text).
 * The mid-text escapes `\n` (soft break), `\N` (hard break), and `\h`
   (non-breaking hard space) are their own tokens; `plain_text` maps
   them against the script's `WrapStyle` (from the `[Script Info]`
   accessor) — `\n` breaks only in wrap mode 2 and is a regular space
   otherwise, `\N` always breaks, `\h` becomes U+00A0.
 
-With the `\t(...)` animated-transform tag now typed, the override-tag
+With the drawing-mode `\p` / `\pbo` toggles now typed, the override-tag
 tokenizer covers every tag in the Aegisub reference that carries
-structured arguments; the drawing-mode `\p` vector-path command stream
-(SVG-ish `m` / `l` / `b` / `s` ops) is the chain's next material.
+structured arguments. The `\p` vector-path command stream itself is
+decoded by a dedicated parser:
+
+```rust
+use oxideav_subtitle::ass_tags::{parse_drawing, emit_drawing};
+use oxideav_subtitle::DrawCmd;
+
+// The spec's "Square" example: m 0 0 l 100 0 100 100 0 100
+let cmds = parse_drawing("m 0 0 l 100 0 100 100 0 100").unwrap();
+assert_eq!(cmds[0], DrawCmd::Move(0.0, 0.0));
+assert_eq!(emit_drawing(&cmds), "m 0 0 l 100 0 100 100 0 100");
+```
+
+`parse_drawing` / `emit_drawing` decode the verbatim command run that
+appears between `\p<level>` and `\p0` (and inside the vector-overload
+`\clip(<drawing>)` form) into a structured `DrawCmd` list — `m` move,
+`n` move-no-close, `l` line (one or more segments), `b` cubic Bézier
+(three control points per curve), `s` cubic b-spline (≥3 points), `p`
+spline-extend, `c` close-spline. Coordinates parse as decimals (commonly
+fractional under a `\p2`+ subpixel scale, possibly negative); the spec's
+square / rounded-square / circle examples decode exactly, and a
+malformed stream returns `None`.
 
 ## ASS / SSA `[Script Info]` typed accessor
 
