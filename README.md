@@ -616,6 +616,40 @@ supplies the matching `<tt>` parameter:
 Without the matching parameter on `<tt>`, the frame / tick component is
 silently dropped (legacy behaviour preserved for back-compat).
 
+### TTML2 §12.2.4 timeContainer (par / seq) timing
+
+`<body>` / `<div>` / `<p>` form nested time containers. The default
+container is **parallel** (`par`): every child's `begin` is resolved
+relative to the container's begin point, so siblings overlap. A
+`timeContainer="seq"` container is **sequential**: each child's interval
+is resolved relative to the *end* of its preceding sibling (the
+container begin for the first child), chaining cues end-to-begin. Each
+container is an independent time base, so a `seq` `<div>` nested inside a
+`par` `<body>` chains its own children while being positioned by the
+outer `par` rules.
+
+* A `begin` on `<body>` shifts the whole document's time base.
+* A `dur` on a `<div>` / `<body>` container fixes its interval span
+  (§12.2.2) regardless of child content, which advances the next
+  sibling in a `seq` parent.
+* `end` on a `<p>` is resolved against the same syncbase as its `begin`.
+
+Resolved cue times are stored absolute, so a re-emit writes a plain
+`par` body and re-parsing reproduces the same intervals.
+
+### TTML2 §12.2.4 timed inline `<span>` reveal
+
+A `<span begin="…">` inside a `<p>` is a timed span: its content
+becomes visible at a cue-relative time. The parser surfaces this as a
+leading `Segment::Timestamp` progressive-reveal marker carrying the
+absolute reveal time — the same marker the WebVTT inline
+cue-timestamp (`<00:00:01.500>`) path produces, so a renderer staggers
+both uniformly. Nested timed spans sync against their outer span's
+begin. The writer regroups a `Timestamp` plus the run that follows it
+into a timed `<span begin="HH:MM:SS.mmm">`, so a parse → write → parse
+cycle preserves every reveal offset. Untimed styled spans emit no
+marker.
+
 ## Input encoding tolerance
 
 Every text-subtitle parser in this crate routes its raw bytes through
