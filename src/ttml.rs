@@ -152,8 +152,15 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
     }
 
     // Walk <body> collecting <p> cues (optionally nested in <div>s).
+    // The <body> is itself a time container (TTML2 §12.2.4): it may carry
+    // `begin` (its interval's begin point) and `timeContainer` (par/seq
+    // semantics for its direct children).
     if let Some(body) = find_element(&tt.children, "body") {
-        collect_cues(&body.children, &mut track, 0, &ctx);
+        let body_begin = attr(body, "begin")
+            .and_then(|v| parse_ttml_time(&v, &ctx))
+            .unwrap_or(0);
+        let body_seq = is_seq_container(body);
+        collect_cues(&body.children, &mut track, body_begin, &ctx, body_seq);
     }
 
     // Keep the original source as extradata so round-trip can replay the
@@ -402,16 +409,65 @@ struct TimingCtx {
     tick_rate: Option<f64>,
 }
 
-fn collect_cues(nodes: &[Node], track: &mut SubtitleTrack, parent_offset_us: i64, ctx: &TimingCtx) {
+/// Walk the timed children of a time container.
+///
+/// `container_begin_us` is the absolute begin point of the enclosing
+/// container's temporal interval; child `begin` attributes are relative
+/// to it (TTML2 §12.2.4 — "relative to the temporal interval of the
+/// container element instance").
+///
+/// `container_seq` selects sequential (`seq`) vs parallel (`par`)
+/// semantics for *this* level. In a `seq` container each child's
+/// interval is relative to the *end* of its preceding sibling (or to the
+/// container begin for the first child); in a `par` container every
+/// child is relative to the container begin.
+///
+/// Returns the latest absolute end-time produced by the subtree so a
+/// `seq` parent can advance its cursor across a child that is itself a
+/// container (TTML2 §12.2.4: "Each time container is considered to
+/// constitute an independent time base").
+fn collect_cues(
+    nodes: &[Node],
+    track: &mut SubtitleTrack,
+    container_begin_us: i64,
+    ctx: &TimingCtx,
+    container_seq: bool,
+) -> i64 {
+    // Sequential cursor: absolute time at which the next sibling's
+    // interval begins. Seeded at the container begin.
+    let mut seq_cursor = container_begin_us;
+    // Latest end produced under this container (par endsync = all).
+    let mut max_end = container_begin_us;
     for node in nodes {
         if let Node::Element(e) = node {
             let local = tag_local(&e.name);
+            // The reference begin for this child: container begin in a
+            // `par` container, the running cursor in a `seq` container.
+            let ref_begin = if container_seq {
+                seq_cursor
+            } else {
+                container_begin_us
+            };
             match local.as_str() {
                 "div" => {
                     let begin = attr(e, "begin")
                         .and_then(|v| parse_ttml_time(&v, ctx))
                         .unwrap_or(0);
-                    collect_cues(&e.children, track, parent_offset_us + begin, ctx);
+                    let div_begin = ref_begin + begin;
+                    let div_seq = is_seq_container(e);
+                    let child_end = collect_cues(&e.children, track, div_begin, ctx, div_seq);
+                    // A `dur` on the container clips/extends the interval
+                    // explicitly (TTML2 §12.2.2). Otherwise the simple
+                    // duration is the span of the children.
+                    let dur_attr = attr(e, "dur").and_then(|v| parse_ttml_time(&v, ctx));
+                    let div_end = match dur_attr {
+                        Some(d) => div_begin + d,
+                        None => child_end,
+                    };
+                    if div_end > max_end {
+                        max_end = div_end;
+                    }
+                    seq_cursor = div_end;
                 }
                 "p" => {
                     let begin = attr(e, "begin")
@@ -419,9 +475,11 @@ fn collect_cues(nodes: &[Node], track: &mut SubtitleTrack, parent_offset_us: i64
                         .unwrap_or(0);
                     let end_attr = attr(e, "end").and_then(|v| parse_ttml_time(&v, ctx));
                     let dur_attr = attr(e, "dur").and_then(|v| parse_ttml_time(&v, ctx));
-                    let start_us = parent_offset_us + begin;
+                    let start_us = ref_begin + begin;
                     let end_us = if let Some(e_us) = end_attr {
-                        parent_offset_us + e_us
+                        // `end` is relative to the same syncbase as
+                        // `begin` (the reference begin), not absolute.
+                        ref_begin + e_us
                     } else if let Some(d) = dur_attr {
                         start_us + d
                     } else {
@@ -471,14 +529,33 @@ fn collect_cues(nodes: &[Node], track: &mut SubtitleTrack, parent_offset_us: i64
                             .metadata
                             .push((format!("ttml_p_extra.{}", cue_idx), p_extras));
                     }
+                    if end_us > max_end {
+                        max_end = end_us;
+                    }
+                    seq_cursor = end_us;
                 }
                 _ => {
-                    // Unknown structural element — recurse.
-                    collect_cues(&e.children, track, parent_offset_us, ctx);
+                    // Unknown structural element — recurse, threading the
+                    // same container context (it is transparent to timing).
+                    let child_end = collect_cues(&e.children, track, ref_begin, ctx, container_seq);
+                    if child_end > max_end {
+                        max_end = child_end;
+                    }
+                    seq_cursor = child_end.max(seq_cursor);
                 }
             }
         }
     }
+    max_end
+}
+
+/// TTML2 §12.2.4: an element has sequential time-container semantics iff
+/// it carries `timeContainer="seq"`. Absent the attribute, `par`
+/// semantics apply. The attribute is namespace-free in TTML.
+fn is_seq_container(e: &Element) -> bool {
+    attr(e, "timeContainer")
+        .map(|v| v.trim().eq_ignore_ascii_case("seq"))
+        .unwrap_or(false)
 }
 
 fn collect_segments(nodes: &[Node]) -> Vec<Segment> {
@@ -1809,5 +1886,160 @@ mod tests {
         let t = parse(src.as_bytes()).unwrap();
         let s = String::from_utf8(write(&t)).unwrap();
         assert!(!s.contains("<layout"), "{}", s);
+    }
+
+    // ---------------------------------------------------------------
+    // TTML2 §12.2.4 timeContainer (par / seq) timing semantics.
+
+    #[test]
+    fn seq_container_chains_begin_to_previous_end() {
+        // In a `seq` <div>, each child's begin is relative to the END of
+        // the previous sibling (the container begin for the first child).
+        // p0: begin 0s dur 2s   → [0, 2)
+        // p1: begin 0s dur 3s   → [2, 5)   (relative to p0 end)
+        // p2: begin 1s dur 1s   → [6, 7)   (1s gap after p1 end at 5s)
+        let src = r#"<?xml version="1.0"?><tt><body>
+            <div timeContainer="seq">
+              <p begin="0s" dur="2s">a</p>
+              <p begin="0s" dur="3s">b</p>
+              <p begin="1s" dur="1s">c</p>
+            </div></body></tt>"#;
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 3);
+        assert_eq!((t.cues[0].start_us, t.cues[0].end_us), (0, 2_000_000));
+        assert_eq!(
+            (t.cues[1].start_us, t.cues[1].end_us),
+            (2_000_000, 5_000_000)
+        );
+        assert_eq!(
+            (t.cues[2].start_us, t.cues[2].end_us),
+            (6_000_000, 7_000_000)
+        );
+    }
+
+    #[test]
+    fn seq_container_uses_end_attr_as_duration() {
+        // With `end` (no dur), the child's interval is [ref_begin+begin,
+        // ref_begin+end); its end advances the cursor.
+        // p0: begin 0s end 4s → [0, 4)
+        // p1: begin 0s end 2s → [4, 6)  (end relative to ref begin = 4s)
+        let src = r#"<?xml version="1.0"?><tt><body>
+            <div timeContainer="seq">
+              <p begin="0s" end="4s">a</p>
+              <p begin="0s" end="2s">b</p>
+            </div></body></tt>"#;
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!((t.cues[0].start_us, t.cues[0].end_us), (0, 4_000_000));
+        assert_eq!(
+            (t.cues[1].start_us, t.cues[1].end_us),
+            (4_000_000, 6_000_000)
+        );
+    }
+
+    #[test]
+    fn par_container_is_default_and_unchanged() {
+        // No timeContainer attribute → par semantics: every child is
+        // relative to the container begin (0), so overlapping intervals.
+        let src = r#"<?xml version="1.0"?><tt><body><div>
+            <p begin="0s" dur="2s">a</p>
+            <p begin="0s" dur="3s">b</p>
+        </div></body></tt>"#;
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!((t.cues[0].start_us, t.cues[0].end_us), (0, 2_000_000));
+        assert_eq!((t.cues[1].start_us, t.cues[1].end_us), (0, 3_000_000));
+    }
+
+    #[test]
+    fn body_begin_offsets_all_children() {
+        // A `begin` on <body> shifts the whole document's time base
+        // (the body is a time container per §12.2.4).
+        let src = r#"<?xml version="1.0"?><tt><body begin="10s"><div>
+            <p begin="1s" dur="2s">a</p>
+        </div></body></tt>"#;
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(
+            (t.cues[0].start_us, t.cues[0].end_us),
+            (11_000_000, 13_000_000)
+        );
+    }
+
+    #[test]
+    fn body_level_seq_chains_divs() {
+        // `timeContainer="seq"` on <body> sequences its <div> children.
+        // Each <div> is itself a (default par) container whose simple
+        // duration spans its cues; the next <div> begins at that end.
+        let src = r#"<?xml version="1.0"?><tt><body timeContainer="seq">
+            <div><p begin="0s" dur="2s">a</p></div>
+            <div><p begin="0s" dur="3s">b</p></div>
+        </body></tt>"#;
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!((t.cues[0].start_us, t.cues[0].end_us), (0, 2_000_000));
+        // Second div starts at 2s (end of first div), so b = [2, 5).
+        assert_eq!(
+            (t.cues[1].start_us, t.cues[1].end_us),
+            (2_000_000, 5_000_000)
+        );
+    }
+
+    #[test]
+    fn div_dur_clips_container_span_for_seq_sibling() {
+        // An explicit `dur` on a container fixes its interval length
+        // regardless of children (TTML2 §12.2.2), advancing a seq sibling.
+        // div0 dur 10s (child only fills 2s) → next div begins at 10s.
+        let src = r#"<?xml version="1.0"?><tt><body timeContainer="seq">
+            <div dur="10s"><p begin="0s" dur="2s">a</p></div>
+            <div><p begin="0s" dur="1s">b</p></div>
+        </body></tt>"#;
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!((t.cues[0].start_us, t.cues[0].end_us), (0, 2_000_000));
+        assert_eq!(
+            (t.cues[1].start_us, t.cues[1].end_us),
+            (10_000_000, 11_000_000)
+        );
+    }
+
+    #[test]
+    fn nested_seq_inside_par_is_an_independent_time_base() {
+        // §12.2.4: "Each time container is considered to constitute an
+        // independent time base." A seq <div> inside a par <body> chains
+        // its own children but is itself positioned by par rules.
+        let src = r#"<?xml version="1.0"?><tt><body>
+            <div begin="5s" timeContainer="seq">
+              <p begin="0s" dur="2s">a</p>
+              <p begin="0s" dur="2s">b</p>
+            </div>
+            <div begin="0s">
+              <p begin="0s" dur="1s">c</p>
+            </div></body></tt>"#;
+        let t = parse(src.as_bytes()).unwrap();
+        // a: 5..7 ; b chains off a's end: 7..9
+        assert_eq!(
+            (t.cues[0].start_us, t.cues[0].end_us),
+            (5_000_000, 7_000_000)
+        );
+        assert_eq!(
+            (t.cues[1].start_us, t.cues[1].end_us),
+            (7_000_000, 9_000_000)
+        );
+        // c lives in a separate par div at begin 0 → 0..1, unaffected.
+        assert_eq!((t.cues[2].start_us, t.cues[2].end_us), (0, 1_000_000));
+    }
+
+    #[test]
+    fn seq_timing_round_trips_as_absolute_par() {
+        // Parsed seq cues hold absolute times; a re-emit writes them as a
+        // plain par body, and re-parsing yields the same intervals.
+        let src = r#"<?xml version="1.0"?><tt><body>
+            <div timeContainer="seq">
+              <p begin="0s" dur="2s">a</p>
+              <p begin="0s" dur="3s">b</p>
+            </div></body></tt>"#;
+        let t = parse(src.as_bytes()).unwrap();
+        let out = write(&t);
+        let t2 = parse(&out).unwrap();
+        assert_eq!(t.cues.len(), t2.cues.len());
+        for (a, b) in t.cues.iter().zip(t2.cues.iter()) {
+            assert_eq!((a.start_us, a.end_us), (b.start_us, b.end_us));
+        }
     }
 }
