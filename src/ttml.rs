@@ -7,8 +7,18 @@
 //! * `<head>`, `<layout>`, `<region>` — named region table (IMSC1)
 //! * `<body>`, `<div>` — structural containers
 //! * `<p>` — a cue (begin/end/dur/region/style attributes + inline children)
-//! * `<span>` — inline span with styling attributes (may be nested)
+//! * `<span>` — inline span with styling attributes (may be nested);
+//!   a `begin` on a span (TTML2 §12.2.4 timed span) surfaces as a
+//!   leading `Segment::Timestamp` progressive-reveal marker
 //! * `<br/>` — line break
+//!
+//! Timing model (TTML2 §12.2.4 `timeContainer`): `<body>` / `<div>` /
+//! `<p>` form nested time containers. The default is parallel (`par`):
+//! every child's `begin` is relative to the container's begin. A
+//! `timeContainer="seq"` container instead sequences its children —
+//! each child's interval is relative to the *end* of its preceding
+//! sibling. A `begin` on `<body>` shifts the whole document's time base,
+//! and a `dur` on a container fixes its interval span (§12.2.2).
 //!
 //! Timing attributes: `begin` / `end` / `dur` accept `HH:MM:SS.mmm`,
 //! `HH:MM:SS`, `HH:MM:SS:FF` (frames are interpreted against the
@@ -487,7 +497,9 @@ fn collect_cues(
                     };
                     let style_ref = attr(e, "style");
                     let region_ref = attr(e, "region");
-                    let mut segments = collect_segments(&e.children);
+                    // Inline timed spans (§12.2.4) reveal relative to the
+                    // cue's begin; pass the absolute cue start as the base.
+                    let mut segments = collect_segments_timed(&e.children, start_us, ctx);
                     // TTML2 §8.1.5: inline IR-modelled `tts:*` styling
                     // attrs on `<p>` wrap the cue's content with the
                     // equivalent Bold / Italic / Color / Font segment(s)
@@ -559,6 +571,22 @@ fn is_seq_container(e: &Element) -> bool {
 }
 
 fn collect_segments(nodes: &[Node]) -> Vec<Segment> {
+    // No timing context (cue begin / frame rate): timed spans cannot be
+    // resolved, so the begin attribute is ignored — content still flows.
+    collect_segments_timed(nodes, 0, &TimingCtx::default())
+}
+
+/// Collect inline content, resolving timed `<span>` reveal markers.
+///
+/// `span_base_us` is the absolute begin of the enclosing timed context
+/// (the cue's begin for a `<p>`'s direct children, or an outer timed
+/// span's begin for nested spans). TTML2 §12.2.4 lists `span` as a time
+/// container: a `<span begin="…">` inside a `<p>` becomes visible at the
+/// cue-relative time. We surface that as a leading
+/// [`Segment::Timestamp`] whose `offset_us` is the absolute reveal time
+/// — the same progressive-reveal marker the WebVTT cue-timestamp path
+/// produces.
+fn collect_segments_timed(nodes: &[Node], span_base_us: i64, ctx: &TimingCtx) -> Vec<Segment> {
     let mut out: Vec<Segment> = Vec::new();
     for node in nodes {
         match node {
@@ -572,12 +600,23 @@ fn collect_segments(nodes: &[Node]) -> Vec<Segment> {
                 match local.as_str() {
                     "br" => out.push(Segment::LineBreak),
                     "span" => {
-                        let children = collect_segments(&e.children);
+                        // A `begin` on the span shifts the reveal time and
+                        // becomes the syncbase for any nested timed spans.
+                        let span_begin = attr(e, "begin").and_then(|v| parse_ttml_time(&v, ctx));
+                        let inner_base = span_base_us + span_begin.unwrap_or(0);
+                        let children = collect_segments_timed(&e.children, inner_base, ctx);
+                        if let Some(b) = span_begin {
+                            // Emit a reveal marker at the absolute begin so
+                            // a renderer can stagger the span's appearance.
+                            out.push(Segment::Timestamp {
+                                offset_us: span_base_us + b,
+                            });
+                        }
                         out.push(wrap_with_style(e, children));
                     }
                     _ => {
                         // Unknown inline element — flatten children.
-                        out.extend(collect_segments(&e.children));
+                        out.extend(collect_segments_timed(&e.children, span_base_us, ctx));
                     }
                 }
             }
@@ -845,60 +884,82 @@ fn strip_ns(name: &str) -> &str {
 }
 
 fn write_segments(segments: &[Segment], out: &mut String) {
-    for seg in segments {
-        match seg {
-            Segment::Text(s) => out.push_str(&escape_text(s)),
-            Segment::LineBreak => out.push_str("<br/>"),
-            Segment::Bold(c) => {
-                out.push_str("<span tts:fontWeight=\"bold\">");
-                write_segments(c, out);
-                out.push_str("</span>");
+    let mut i = 0;
+    while i < segments.len() {
+        let seg = &segments[i];
+        // A reveal marker (§12.2.4 timed span) re-emits as a timed
+        // `<span begin="…">` wrapping the run of content up to the next
+        // marker (or end). The `begin` is the absolute reveal time, so a
+        // re-parse reproduces the same Timestamp offset.
+        if let Segment::Timestamp { offset_us } = seg {
+            let mut j = i + 1;
+            while j < segments.len() && !matches!(segments[j], Segment::Timestamp { .. }) {
+                j += 1;
             }
-            Segment::Italic(c) => {
-                out.push_str("<span tts:fontStyle=\"italic\">");
-                write_segments(c, out);
-                out.push_str("</span>");
-            }
-            Segment::Underline(c) => {
-                out.push_str("<span tts:textDecoration=\"underline\">");
-                write_segments(c, out);
-                out.push_str("</span>");
-            }
-            Segment::Strike(c) => {
-                out.push_str("<span tts:textDecoration=\"lineThrough\">");
-                write_segments(c, out);
-                out.push_str("</span>");
-            }
-            Segment::Color { rgb, children } => {
-                out.push_str(&format!(
-                    "<span tts:color=\"#{:02X}{:02X}{:02X}\">",
-                    rgb.0, rgb.1, rgb.2
-                ));
-                write_segments(children, out);
-                out.push_str("</span>");
-            }
-            Segment::Font {
-                family,
-                size,
-                children,
-            } => {
-                out.push_str("<span");
-                if let Some(f) = family {
-                    out.push_str(&format!(" tts:fontFamily=\"{}\"", escape_attr(f)));
-                }
-                if let Some(s) = size {
-                    out.push_str(&format!(" tts:fontSize=\"{}px\"", s));
-                }
-                out.push('>');
-                write_segments(children, out);
-                out.push_str("</span>");
-            }
-            Segment::Voice { children, .. }
-            | Segment::Class { children, .. }
-            | Segment::Karaoke { children, .. } => write_segments(children, out),
-            Segment::Timestamp { .. } => {}
-            Segment::Raw(s) => out.push_str(&escape_text(s)),
+            out.push_str(&format!("<span begin=\"{}\">", format_ts(*offset_us)));
+            write_segments(&segments[i + 1..j], out);
+            out.push_str("</span>");
+            i = j;
+            continue;
         }
+        write_one_segment(seg, out);
+        i += 1;
+    }
+}
+
+fn write_one_segment(seg: &Segment, out: &mut String) {
+    match seg {
+        Segment::Text(s) => out.push_str(&escape_text(s)),
+        Segment::LineBreak => out.push_str("<br/>"),
+        Segment::Bold(c) => {
+            out.push_str("<span tts:fontWeight=\"bold\">");
+            write_segments(c, out);
+            out.push_str("</span>");
+        }
+        Segment::Italic(c) => {
+            out.push_str("<span tts:fontStyle=\"italic\">");
+            write_segments(c, out);
+            out.push_str("</span>");
+        }
+        Segment::Underline(c) => {
+            out.push_str("<span tts:textDecoration=\"underline\">");
+            write_segments(c, out);
+            out.push_str("</span>");
+        }
+        Segment::Strike(c) => {
+            out.push_str("<span tts:textDecoration=\"lineThrough\">");
+            write_segments(c, out);
+            out.push_str("</span>");
+        }
+        Segment::Color { rgb, children } => {
+            out.push_str(&format!(
+                "<span tts:color=\"#{:02X}{:02X}{:02X}\">",
+                rgb.0, rgb.1, rgb.2
+            ));
+            write_segments(children, out);
+            out.push_str("</span>");
+        }
+        Segment::Font {
+            family,
+            size,
+            children,
+        } => {
+            out.push_str("<span");
+            if let Some(f) = family {
+                out.push_str(&format!(" tts:fontFamily=\"{}\"", escape_attr(f)));
+            }
+            if let Some(s) = size {
+                out.push_str(&format!(" tts:fontSize=\"{}px\"", s));
+            }
+            out.push('>');
+            write_segments(children, out);
+            out.push_str("</span>");
+        }
+        Segment::Voice { children, .. }
+        | Segment::Class { children, .. }
+        | Segment::Karaoke { children, .. } => write_segments(children, out),
+        Segment::Timestamp { .. } => {}
+        Segment::Raw(s) => out.push_str(&escape_text(s)),
     }
 }
 
@@ -2023,6 +2084,109 @@ mod tests {
         );
         // c lives in a separate par div at begin 0 → 0..1, unaffected.
         assert_eq!((t.cues[2].start_us, t.cues[2].end_us), (0, 1_000_000));
+    }
+
+    // ---------------------------------------------------------------
+    // TTML2 §12.2.4 timed inline <span> reveal markers.
+
+    #[test]
+    fn timed_span_emits_reveal_timestamp() {
+        // A `<span begin="…">` inside a <p> reveals progressively; we
+        // surface that as a leading Segment::Timestamp at the absolute
+        // reveal time (cue begin + span begin).
+        let src = r#"<?xml version="1.0"?><tt><body><div>
+            <p begin="10s" end="14s">Ready <span begin="1s">set</span> <span begin="2s">go</span></p>
+        </div></body></tt>"#;
+        let t = parse(src.as_bytes()).unwrap();
+        assert_eq!(t.cues.len(), 1);
+        let segs = &t.cues[0].segments;
+        // Expect a reveal marker at 11s (10s cue + 1s span) and at 12s.
+        let stamps: Vec<i64> = segs
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Timestamp { offset_us } => Some(*offset_us),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stamps, vec![11_000_000, 12_000_000]);
+    }
+
+    #[test]
+    fn untimed_span_emits_no_timestamp() {
+        // A plain styled span (no begin) must not inject a reveal marker.
+        let src = r##"<?xml version="1.0"?>
+<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling">
+  <body><div><p begin="0s" end="1s"><span tts:fontWeight="bold">x</span></p></div></body></tt>"##;
+        let t = parse(src.as_bytes()).unwrap();
+        assert!(!t.cues[0]
+            .segments
+            .iter()
+            .any(|s| matches!(s, Segment::Timestamp { .. })));
+    }
+
+    #[test]
+    fn timed_span_round_trips_through_write() {
+        // Parse → write → parse must preserve the reveal timestamps.
+        let src = r#"<?xml version="1.0"?><tt><body><div>
+            <p begin="0s" end="5s">a<span begin="2s">b</span></p>
+        </div></body></tt>"#;
+        let t = parse(src.as_bytes()).unwrap();
+        let out = write(&t);
+        let s = String::from_utf8(out.clone()).unwrap();
+        // The writer re-emits a timed span anchored at the absolute reveal.
+        assert!(s.contains("<span begin=\"00:00:02.000\">"), "{}", s);
+        let t2 = parse(&out).unwrap();
+        let stamps0: Vec<i64> = t.cues[0]
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Timestamp { offset_us } => Some(*offset_us),
+                _ => None,
+            })
+            .collect();
+        let stamps1: Vec<i64> = t2.cues[0]
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                Segment::Timestamp { offset_us } => Some(*offset_us),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stamps0, vec![2_000_000]);
+        assert_eq!(stamps0, stamps1);
+    }
+
+    #[test]
+    fn nested_timed_span_resolves_against_outer_begin() {
+        // A nested `<span begin>` syncs off the outer timed span's begin.
+        // outer begin 2s, inner begin 1s → inner reveals at cue+3s.
+        let src = r#"<?xml version="1.0"?><tt><body><div>
+            <p begin="0s" end="9s"><span begin="2s">x<span begin="1s">y</span></span></p>
+        </div></body></tt>"#;
+        let t = parse(src.as_bytes()).unwrap();
+        let mut stamps = Vec::new();
+        collect_stamps(&t.cues[0].segments, &mut stamps);
+        assert!(stamps.contains(&2_000_000), "{:?}", stamps);
+        assert!(stamps.contains(&3_000_000), "{:?}", stamps);
+    }
+
+    /// Recursively gather every reveal-marker offset in a segment tree.
+    fn collect_stamps(segs: &[Segment], out: &mut Vec<i64>) {
+        for s in segs {
+            match s {
+                Segment::Timestamp { offset_us } => out.push(*offset_us),
+                Segment::Bold(c)
+                | Segment::Italic(c)
+                | Segment::Underline(c)
+                | Segment::Strike(c) => collect_stamps(c, out),
+                Segment::Color { children, .. }
+                | Segment::Font { children, .. }
+                | Segment::Voice { children, .. }
+                | Segment::Class { children, .. }
+                | Segment::Karaoke { children, .. } => collect_stamps(children, out),
+                _ => {}
+            }
+        }
     }
 
     #[test]
