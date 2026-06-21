@@ -110,6 +110,107 @@ fn visit<F: FnMut(&Segment)>(segs: &[Segment], f: &mut F) {
     }
 }
 
+/// Flatten a cue's segment tree to a plain string, rendering a
+/// [`Segment::LineBreak`] as `\n`. Used by the whitespace tests.
+fn plain(segs: &[Segment]) -> String {
+    let mut out = String::new();
+    visit(segs, &mut |s| match s {
+        Segment::Text(t) => out.push_str(t),
+        Segment::LineBreak => out.push('\n'),
+        _ => {}
+    });
+    out
+}
+
+// ---------------------------------------------------------------------------
+// TTML2 §8.2.10 xml:space whitespace handling.
+
+const WS_DOC_HEAD: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\" xml:lang=\"en\">\n  <body>\n    <div>\n";
+const WS_DOC_TAIL: &str = "    </div>\n  </body>\n</tt>\n";
+
+fn ws_doc(p: &str) -> String {
+    format!("{WS_DOC_HEAD}      {p}\n{WS_DOC_TAIL}")
+}
+
+#[test]
+fn default_mode_collapses_authored_linefeeds_and_indentation() {
+    // The cue's text is split across indented lines — the default
+    // (collapse) mode treats the linefeeds + indentation as a single
+    // space between the words and trims the cue edges.
+    let doc = ws_doc(
+        "<p begin=\"0s\" end=\"1s\">\n        Hello   there\n        wide   world\n      </p>",
+    );
+    let t = ttml::parse(doc.as_bytes()).unwrap();
+    assert_eq!(t.cues.len(), 1);
+    assert_eq!(plain(&t.cues[0].segments), "Hello there wide world");
+}
+
+#[test]
+fn default_mode_collapses_tab_to_single_space() {
+    let doc = ws_doc("<p begin=\"0s\" end=\"1s\">a\t\tb</p>");
+    let t = ttml::parse(doc.as_bytes()).unwrap();
+    assert_eq!(plain(&t.cues[0].segments), "a b");
+}
+
+#[test]
+fn default_mode_trims_whitespace_around_br() {
+    // Whitespace surrounding a <br/> linefeed boundary is dropped
+    // ("ignore-if-surrounding-linefeed").
+    let doc = ws_doc("<p begin=\"0s\" end=\"1s\">one   <br/>   two</p>");
+    let t = ttml::parse(doc.as_bytes()).unwrap();
+    assert_eq!(plain(&t.cues[0].segments), "one\ntwo");
+}
+
+#[test]
+fn default_mode_collapses_across_span_boundary() {
+    // A trailing space of one text node and a leading space of the next
+    // (here separated by a span) collapse to one.
+    let doc = ws_doc("<p begin=\"0s\" end=\"1s\">a <span>b</span>  c</p>");
+    let t = ttml::parse(doc.as_bytes()).unwrap();
+    assert_eq!(plain(&t.cues[0].segments), "a b c");
+}
+
+#[test]
+fn preserve_mode_keeps_whitespace_verbatim() {
+    // xml:space="preserve" keeps the authored whitespace, including the
+    // leading newline + indentation and the interior multiple spaces.
+    let doc = ws_doc("<p begin=\"0s\" end=\"1s\" xml:space=\"preserve\">a   b\nc</p>");
+    let t = ttml::parse(doc.as_bytes()).unwrap();
+    assert_eq!(plain(&t.cues[0].segments), "a   b\nc");
+}
+
+#[test]
+fn preserve_inherits_from_tt_root() {
+    // xml:space on <tt> is inherited by descendant <p> content.
+    let doc = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\" xml:lang=\"en\" xml:space=\"preserve\">\n\
+  <body><div><p begin=\"0s\" end=\"1s\">a   b</p></div></body>\n</tt>\n";
+    let t = ttml::parse(doc.as_bytes()).unwrap();
+    assert_eq!(plain(&t.cues[0].segments), "a   b");
+}
+
+#[test]
+fn nested_default_span_collapses_under_preserve_parent() {
+    // A preserve <p> with a default-mode <span>: the span's content
+    // collapses while the surrounding preserve text stays verbatim.
+    let doc = ws_doc(
+        "<p begin=\"0s\" end=\"1s\" xml:space=\"preserve\">x   <span xml:space=\"default\">y   z</span></p>",
+    );
+    let t = ttml::parse(doc.as_bytes()).unwrap();
+    assert_eq!(plain(&t.cues[0].segments), "x   y z");
+}
+
+#[test]
+fn nested_preserve_span_stays_verbatim_under_default_parent() {
+    let doc =
+        ws_doc("<p begin=\"0s\" end=\"1s\">a   <span xml:space=\"preserve\">b   c</span>   d</p>");
+    let t = ttml::parse(doc.as_bytes()).unwrap();
+    // The default-mode text around the span collapses; the preserve span
+    // keeps its interior double space.
+    assert_eq!(plain(&t.cues[0].segments), "a b   c d");
+}
+
 // ---------------------------------------------------------------------------
 // IMSC1 §6 + §7 end-to-end integration.
 

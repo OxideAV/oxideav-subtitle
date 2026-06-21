@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TTML `xml:space` whitespace handling (TTML2 §8.2.10). The `<p>` cue
+  parser now normalizes inline text per the resolved whitespace mode
+  instead of carrying authored line-formatting verbatim. In the
+  `default` (collapse) mode — the initial value when no `xml:space` is
+  present — authored linefeeds and horizontal tabs become single spaces,
+  runs of whitespace collapse to one space, and whitespace that surrounds
+  a cue edge or a `<br/>` line-break boundary is dropped
+  ("ignore-if-surrounding-linefeed"). The `preserve` mode keeps the text
+  verbatim. The mode is inherited from the nearest ancestor (`tt` /
+  `body` / `div` / `p` / `span`) that specifies it, so a `preserve`
+  `<p>` with a `default` `<span>` collapses only the span, and a
+  `default` `<p>` with a `preserve` `<span>` keeps only that span
+  verbatim. Previously a multi-line indented `<p>` produced segments
+  full of inter-tag indentation whitespace.
 - ASS / SSA typed drawing-mode override tags in `ass_tags`. `\p<0/1/..>`
   parses to `AssTag::Drawing(u32)` (the level "might be any integer
   larger than zero, and will be interpreted as the scale, in

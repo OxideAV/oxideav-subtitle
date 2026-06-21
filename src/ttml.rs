@@ -170,7 +170,19 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
             .and_then(|v| parse_ttml_time(&v, &ctx))
             .unwrap_or(0);
         let body_seq = is_seq_container(body);
-        collect_cues(&body.children, &mut track, body_begin, &ctx, body_seq);
+        // TTML2 §8.2.10 / §8.1.1: the effective `xml:space` is `default`
+        // (collapse) unless `<tt>` specifies otherwise; `<body>` may
+        // override it for the document's content.
+        let root_ws = resolve_ws(tt, WsMode::Collapse);
+        let body_ws = resolve_ws(body, root_ws);
+        collect_cues(
+            &body.children,
+            &mut track,
+            body_begin,
+            &ctx,
+            body_seq,
+            body_ws,
+        );
     }
 
     // Keep the original source as extradata so round-trip can replay the
@@ -419,6 +431,92 @@ struct TimingCtx {
     tick_rate: Option<f64>,
 }
 
+/// TTML2 §8.2.10 `xml:space` whitespace-handling mode for the content of
+/// an element (and, by inheritance, its descendants).
+///
+/// * [`WsMode::Collapse`] is the `default` value: linefeeds are treated
+///   as spaces, a horizontal tab counts as a single space, runs of
+///   whitespace collapse to one space, and whitespace adjacent to a
+///   linefeed / line-break boundary is ignored ("ignore-if-surrounding-
+///   linefeed"). This is the initial value when no `xml:space` attribute
+///   is present (§8.1.1: "If no `xml:space` attribute is specified upon
+///   the `tt` element, then it must be considered as if the attribute had
+///   been specified with a value of `default`").
+/// * [`WsMode::Preserve`] keeps the verbatim text exactly as authored.
+///
+/// The mode "applies to all of that element's descendants unless
+/// overridden by a descendant" — i.e. it is inherited from the nearest
+/// ancestor that specifies it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WsMode {
+    Collapse,
+    Preserve,
+}
+
+/// Resolve the effective [`WsMode`] for an element: its own `xml:space`
+/// attribute if present, otherwise the value inherited from its ancestor.
+fn resolve_ws(e: &Element, inherited: WsMode) -> WsMode {
+    match attr(e, "xml:space").as_deref() {
+        Some("preserve") => WsMode::Preserve,
+        Some("default") => WsMode::Collapse,
+        // An unrecognised value is treated as the inherited mode rather
+        // than guessed — the spec only defines `default` / `preserve`.
+        _ => inherited,
+    }
+}
+
+/// Collapse the whitespace of one text node given the running boundary
+/// state. Linefeeds and tabs are treated as spaces (§8.2.10); a run of
+/// whitespace collapses to one space, and a space that lands on a
+/// boundary (cue start, after a break, or after an already-emitted space)
+/// is dropped.
+fn collapse_text(s: &str, at_boundary: &mut bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000C}') {
+            if !*at_boundary {
+                out.push(' ');
+                *at_boundary = true;
+            }
+        } else {
+            out.push(ch);
+            *at_boundary = false;
+        }
+    }
+    out
+}
+
+/// Trim a single trailing collapsed space from the last visible text node
+/// of the tree (document order), so the cue does not end on whitespace.
+fn trim_trailing_space(segments: &mut [Segment]) -> bool {
+    for seg in segments.iter_mut().rev() {
+        let trimmed = match seg {
+            Segment::Text(s) => {
+                if s.ends_with(' ') {
+                    s.pop();
+                }
+                // A text node is "done" only if it still carries a visible
+                // char; an emptied node lets the search continue leftward.
+                !s.is_empty()
+            }
+            Segment::LineBreak => true,
+            Segment::Bold(c) | Segment::Italic(c) | Segment::Underline(c) | Segment::Strike(c) => {
+                trim_trailing_space(c)
+            }
+            Segment::Color { children, .. }
+            | Segment::Font { children, .. }
+            | Segment::Voice { children, .. }
+            | Segment::Class { children, .. }
+            | Segment::Karaoke { children, .. } => trim_trailing_space(children),
+            Segment::Timestamp { .. } | Segment::Raw(_) => false,
+        };
+        if trimmed {
+            return true;
+        }
+    }
+    false
+}
+
 /// Walk the timed children of a time container.
 ///
 /// `container_begin_us` is the absolute begin point of the enclosing
@@ -442,6 +540,7 @@ fn collect_cues(
     container_begin_us: i64,
     ctx: &TimingCtx,
     container_seq: bool,
+    container_ws: WsMode,
 ) -> i64 {
     // Sequential cursor: absolute time at which the next sibling's
     // interval begins. Seeded at the container begin.
@@ -465,7 +564,9 @@ fn collect_cues(
                         .unwrap_or(0);
                     let div_begin = ref_begin + begin;
                     let div_seq = is_seq_container(e);
-                    let child_end = collect_cues(&e.children, track, div_begin, ctx, div_seq);
+                    let div_ws = resolve_ws(e, container_ws);
+                    let child_end =
+                        collect_cues(&e.children, track, div_begin, ctx, div_seq, div_ws);
                     // A `dur` on the container clips/extends the interval
                     // explicitly (TTML2 §12.2.2). Otherwise the simple
                     // duration is the span of the children.
@@ -499,7 +600,14 @@ fn collect_cues(
                     let region_ref = attr(e, "region");
                     // Inline timed spans (§12.2.4) reveal relative to the
                     // cue's begin; pass the absolute cue start as the base.
-                    let mut segments = collect_segments_timed(&e.children, start_us, ctx);
+                    // TTML2 §8.2.10: `collect_segments_timed` normalizes the
+                    // cue's inline whitespace per the resolved `xml:space`
+                    // mode — authored line-formatting newlines / indentation
+                    // between tags become a single space (or are trimmed at
+                    // cue / `<br/>` boundaries) in `default` (collapse) mode;
+                    // `preserve` keeps the text verbatim.
+                    let p_ws = resolve_ws(e, container_ws);
+                    let mut segments = collect_segments_timed(&e.children, start_us, ctx, p_ws);
                     // TTML2 §8.1.5: inline IR-modelled `tts:*` styling
                     // attrs on `<p>` wrap the cue's content with the
                     // equivalent Bold / Italic / Color / Font segment(s)
@@ -548,8 +656,11 @@ fn collect_cues(
                 }
                 _ => {
                     // Unknown structural element — recurse, threading the
-                    // same container context (it is transparent to timing).
-                    let child_end = collect_cues(&e.children, track, ref_begin, ctx, container_seq);
+                    // same container context (it is transparent to timing),
+                    // but honour an `xml:space` it may carry for its subtree.
+                    let child_ws = resolve_ws(e, container_ws);
+                    let child_end =
+                        collect_cues(&e.children, track, ref_begin, ctx, container_seq, child_ws);
                     if child_end > max_end {
                         max_end = child_end;
                     }
@@ -570,12 +681,6 @@ fn is_seq_container(e: &Element) -> bool {
         .unwrap_or(false)
 }
 
-fn collect_segments(nodes: &[Node]) -> Vec<Segment> {
-    // No timing context (cue begin / frame rate): timed spans cannot be
-    // resolved, so the begin attribute is ignored — content still flows.
-    collect_segments_timed(nodes, 0, &TimingCtx::default())
-}
-
 /// Collect inline content, resolving timed `<span>` reveal markers.
 ///
 /// `span_base_us` is the absolute begin of the enclosing timed context
@@ -586,25 +691,93 @@ fn collect_segments(nodes: &[Node]) -> Vec<Segment> {
 /// [`Segment::Timestamp`] whose `offset_us` is the absolute reveal time
 /// — the same progressive-reveal marker the WebVTT cue-timestamp path
 /// produces.
-fn collect_segments_timed(nodes: &[Node], span_base_us: i64, ctx: &TimingCtx) -> Vec<Segment> {
+fn collect_segments_timed(
+    nodes: &[Node],
+    span_base_us: i64,
+    ctx: &TimingCtx,
+    ws: WsMode,
+) -> Vec<Segment> {
+    // `at_boundary` threads the §8.2.10 collapse state across the entire
+    // cue's inline run (so a trailing space of one node and a leading space
+    // of the next collapse to one, and whitespace surrounding a `<br/>` is
+    // dropped). It starts true so leading whitespace is trimmed.
+    let mut at_boundary = true;
+    let mut out = collect_segments_inner(nodes, span_base_us, ctx, ws, &mut at_boundary);
+    // Drop a dangling collapsed space at the very end of the cue. Only
+    // safe in collapse mode; a `preserve` subtree keeps its authored
+    // trailing whitespace verbatim.
+    if ws == WsMode::Collapse {
+        trim_trailing_space(&mut out);
+    }
+    out
+}
+
+/// Recursive worker for [`collect_segments_timed`] that threads the
+/// `at_boundary` collapse state. In [`WsMode::Collapse`] each text node is
+/// normalized against the running boundary; in [`WsMode::Preserve`] text
+/// is kept verbatim (and any visible char resets the boundary so a
+/// following collapse-mode space is not spuriously trimmed).
+fn collect_segments_inner(
+    nodes: &[Node],
+    span_base_us: i64,
+    ctx: &TimingCtx,
+    ws: WsMode,
+    at_boundary: &mut bool,
+) -> Vec<Segment> {
     let mut out: Vec<Segment> = Vec::new();
     for node in nodes {
         match node {
             Node::Text(s) => {
-                if !s.is_empty() {
-                    out.push(Segment::Text(s.clone()));
+                if s.is_empty() {
+                    continue;
+                }
+                match ws {
+                    WsMode::Collapse => {
+                        let norm = collapse_text(s, at_boundary);
+                        if !norm.is_empty() {
+                            out.push(Segment::Text(norm));
+                        }
+                    }
+                    WsMode::Preserve => {
+                        // Verbatim. The last char fixes the boundary for any
+                        // adjacent collapse-mode sibling.
+                        if let Some(last) = s.chars().next_back() {
+                            *at_boundary = matches!(last, ' ' | '\t' | '\n' | '\r' | '\u{000C}');
+                        }
+                        out.push(Segment::Text(s.clone()));
+                    }
                 }
             }
             Node::Element(e) => {
                 let local = tag_local(&e.name);
                 match local.as_str() {
-                    "br" => out.push(Segment::LineBreak),
+                    "br" => {
+                        // A break is a boundary on *both* sides in collapse
+                        // mode (§8.2.10 "ignore-if-surrounding-linefeed"):
+                        // trim a trailing collapsed space already emitted
+                        // before the break, and suppress whitespace that
+                        // follows it.
+                        if ws == WsMode::Collapse {
+                            trim_trailing_space(&mut out);
+                        }
+                        out.push(Segment::LineBreak);
+                        *at_boundary = true;
+                    }
                     "span" => {
                         // A `begin` on the span shifts the reveal time and
                         // becomes the syncbase for any nested timed spans.
                         let span_begin = attr(e, "begin").and_then(|v| parse_ttml_time(&v, ctx));
                         let inner_base = span_base_us + span_begin.unwrap_or(0);
-                        let children = collect_segments_timed(&e.children, inner_base, ctx);
+                        // §8.2.10: a span may override the inherited
+                        // whitespace mode for its own subtree.
+                        let span_ws = resolve_ws(e, ws);
+                        let children = collect_segments_inner(
+                            &e.children,
+                            inner_base,
+                            ctx,
+                            span_ws,
+                            at_boundary,
+                        );
                         if let Some(b) = span_begin {
                             // Emit a reveal marker at the absolute begin so
                             // a renderer can stagger the span's appearance.
@@ -616,7 +789,13 @@ fn collect_segments_timed(nodes: &[Node], span_base_us: i64, ctx: &TimingCtx) ->
                     }
                     _ => {
                         // Unknown inline element — flatten children.
-                        out.extend(collect_segments_timed(&e.children, span_base_us, ctx));
+                        out.extend(collect_segments_inner(
+                            &e.children,
+                            span_base_us,
+                            ctx,
+                            ws,
+                            at_boundary,
+                        ));
                     }
                 }
             }
@@ -997,7 +1176,11 @@ pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
         })
         .unwrap_or(start_us);
     let style_ref = attr(p, "style");
-    let segments = collect_segments(&p.children);
+    // Honour an `xml:space` on the `<p>` (TTML2 §8.2.10); default to the
+    // spec's initial collapse mode otherwise. `collect_segments_timed`
+    // applies the resolved whitespace normalization in place.
+    let p_ws = resolve_ws(p, WsMode::Collapse);
+    let segments = collect_segments_timed(&p.children, 0, &ctx, p_ws);
     Ok(SubtitleCue {
         start_us,
         end_us,
