@@ -650,6 +650,37 @@ into a timed `<span begin="HH:MM:SS.mmm">`, so a parse → write → parse
 cycle preserves every reveal offset. Untimed styled spans emit no
 marker.
 
+### TTML2 §8.2.10 `xml:space` whitespace handling
+
+A `<p>` cue's inline text is normalised per its resolved `xml:space`
+mode rather than carried with the authored line-formatting whitespace.
+
+* **`default` (collapse)** — the initial value when no `xml:space` is
+  present (§8.1.1: "If no `xml:space` attribute is specified upon the
+  `tt` element, then it must be considered as if the attribute had been
+  specified with a value of `default`"). Authored linefeeds are treated
+  as spaces (`linefeed-treatment="treat-as-space"`), a horizontal tab
+  counts as a single space, runs of whitespace collapse to one space
+  (`white-space-collapse="true"`), and whitespace that surrounds a cue
+  edge or a `<br/>` line-break boundary is dropped
+  (`white-space-treatment="ignore-if-surrounding-linefeed"` +
+  `suppress-at-line-break="auto"`). So a multi-line indented
+  `<p>\n  Hello   there\n  wide world\n</p>` parses to
+  `"Hello there wide world"` instead of a segment run carrying the
+  inter-tag indentation.
+* **`preserve`** — keeps the text exactly as authored.
+
+The mode is inherited from the nearest ancestor (`tt` / `body` / `div` /
+`p` / `span`) that specifies it. A `preserve` `<p>` containing a
+`<span xml:space="default">` collapses only the span, and a `default`
+`<p>` containing a `<span xml:space="preserve">` keeps only that span
+verbatim; the collapse threads a single boundary state across the whole
+cue so a trailing space before a span and a leading space after it
+collapse to one. A cue captured in `preserve` mode rides a per-cue
+`ttml_cue_xml_space.<idx>` track-metadata entry, and the writer re-emits
+`xml:space="preserve"` on the `<p>` so the verbatim text survives a
+parse → write → parse round-trip.
+
 ## Input encoding tolerance
 
 Every text-subtitle parser in this crate routes its raw bytes through

@@ -211,6 +211,41 @@ fn nested_preserve_span_stays_verbatim_under_default_parent() {
     assert_eq!(plain(&t.cues[0].segments), "a b   c d");
 }
 
+#[test]
+fn preserve_mode_writer_emits_xml_space_attr() {
+    let doc = ws_doc("<p begin=\"0s\" end=\"1s\" xml:space=\"preserve\">a   b</p>");
+    let t = ttml::parse(doc.as_bytes()).unwrap();
+    let out = String::from_utf8(ttml::write(&t)).unwrap();
+    assert!(
+        out.contains("xml:space=\"preserve\""),
+        "writer dropped the preserve attr: {out}"
+    );
+}
+
+#[test]
+fn preserve_mode_round_trips_verbatim_text() {
+    // parse -> write -> parse keeps the preserved interior whitespace.
+    let doc = ws_doc("<p begin=\"0s\" end=\"1s\" xml:space=\"preserve\">a   b   c</p>");
+    let t1 = ttml::parse(doc.as_bytes()).unwrap();
+    assert_eq!(plain(&t1.cues[0].segments), "a   b   c");
+    let out = ttml::write(&t1);
+    let t2 = ttml::parse(&out).unwrap();
+    assert_eq!(plain(&t2.cues[0].segments), "a   b   c");
+}
+
+#[test]
+fn default_mode_writer_omits_xml_space_attr() {
+    // A collapse-mode cue carries no xml:space metadata, so the writer
+    // emits no xml:space attribute.
+    let doc = ws_doc("<p begin=\"0s\" end=\"1s\">plain text</p>");
+    let t = ttml::parse(doc.as_bytes()).unwrap();
+    let out = String::from_utf8(ttml::write(&t)).unwrap();
+    assert!(
+        !out.contains("xml:space"),
+        "writer added a spurious xml:space attr: {out}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // IMSC1 §6 + §7 end-to-end integration.
 

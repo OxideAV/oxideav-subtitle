@@ -22,7 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<p>` with a `default` `<span>` collapses only the span, and a
   `default` `<p>` with a `preserve` `<span>` keeps only that span
   verbatim. Previously a multi-line indented `<p>` produced segments
-  full of inter-tag indentation whitespace.
+  full of inter-tag indentation whitespace. A cue captured in `preserve`
+  mode records its mode in `ttml_cue_xml_space.<idx>` track metadata, and
+  the writer re-emits `xml:space="preserve"` on the `<p>` so the verbatim
+  text survives a parse → write → parse round-trip; a `default`-mode cue
+  carries no such metadata and the writer emits no `xml:space` attribute.
 - ASS / SSA typed drawing-mode override tags in `ass_tags`. `\p<0/1/..>`
   parses to `AssTag::Drawing(u32)` (the level "might be any integer
   larger than zero, and will be interpreted as the scale, in

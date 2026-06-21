@@ -361,6 +361,14 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
                 out.push_str(extras);
             }
         }
+        // Re-emit `xml:space="preserve"` for a cue captured in preserve
+        // mode (TTML2 §8.2.10) so its verbatim text round-trips.
+        let xml_space_key = format!("ttml_cue_xml_space.{}", idx);
+        if let Some((_, v)) = track.metadata.iter().find(|(k, _)| k == &xml_space_key) {
+            if v == "preserve" {
+                out.push_str(" xml:space=\"preserve\"");
+            }
+        }
         out.push('>');
         write_segments(&cue.segments, &mut out);
         out.push_str("</p>\n");
@@ -648,6 +656,17 @@ fn collect_cues(
                         track
                             .metadata
                             .push((format!("ttml_p_extra.{}", cue_idx), p_extras));
+                    }
+                    // TTML2 §8.2.10: record the cue's *effective* whitespace
+                    // mode when it is `preserve` (the non-default), so the
+                    // writer re-emits `xml:space="preserve"` on the flat
+                    // `<p>` and the verbatim text survives a round-trip. The
+                    // `default` mode is the writer's implicit behaviour and
+                    // needs no metadata.
+                    if p_ws == WsMode::Preserve {
+                        track
+                            .metadata
+                            .push((format!("ttml_cue_xml_space.{}", cue_idx), "preserve".into()));
                     }
                     if end_us > max_end {
                         max_end = end_us;
