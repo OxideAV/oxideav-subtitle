@@ -939,29 +939,63 @@ fn parse_text_align(v: &str) -> Option<oxideav_core::TextAlign> {
 /// `SubtitleStyle` are collected verbatim into an attribute fragment
 /// (space-separated `name="value"`), preserving the canonical order so
 /// re-emit is byte-stable.
+///
+/// The order follows the TTML2 §10.2 styling-attribute vocabulary
+/// (`tts:backgroundClip` … `tts:zIndex`, listed §10.2.2 through §10.2.52
+/// in `docs/subtitles/ttml2-w3c.html`), so the full vocabulary survives a
+/// parse → write cycle even for the attributes the IR doesn't otherwise
+/// model. The seven `SubtitleStyle`-modelled names (`tts:color`,
+/// `tts:backgroundColor`, `tts:fontFamily`, `tts:fontSize`,
+/// `tts:fontWeight`, `tts:fontStyle`, `tts:textDecoration`) are absent
+/// here because they round-trip through the `SubtitleStyle` fields;
+/// `tts:textAlign` is present but filtered to the `justify` value only
+/// (the IR-mappable values round-trip via `SubtitleStyle.align`). The two
+/// IMSC `itts:` extension attributes trail the `tts:` vocabulary.
 const STYLE_EXTRA_ORDER: &[&str] = &[
-    "tts:textAlign", // copied here ONLY if its value isn't in the IR's set; see filter
+    "tts:backgroundClip",
+    "tts:backgroundExtent",
+    "tts:backgroundImage",
+    "tts:backgroundOrigin",
+    "tts:backgroundPosition",
+    "tts:backgroundRepeat",
+    "tts:border",
+    "tts:bpd",
+    "tts:direction",
+    "tts:disparity",
+    "tts:display",
     "tts:displayAlign",
     "tts:extent",
-    "tts:origin",
-    "tts:padding",
+    "tts:fontKerning",
+    "tts:fontSelectionStrategy",
+    "tts:fontShear",
+    "tts:fontVariant",
+    "tts:ipd",
+    "tts:letterSpacing",
     "tts:lineHeight",
+    "tts:lineShear",
+    "tts:luminanceGain",
     "tts:opacity",
+    "tts:origin",
     "tts:overflow",
-    "tts:textOutline",
-    "tts:textShadow",
-    "tts:writingMode",
-    "tts:wrapOption",
-    "tts:direction",
-    "tts:unicodeBidi",
+    "tts:padding",
+    "tts:position",
+    "tts:ruby",
     "tts:rubyAlign",
+    "tts:rubyPosition",
+    "tts:rubyReserve",
     "tts:shear",
     "tts:showBackground",
+    "tts:textAlign", // copied here ONLY if its value isn't in the IR's set; see filter
+    "tts:textCombine",
+    "tts:textEmphasis",
+    "tts:textOrientation",
+    "tts:textOutline",
+    "tts:textShadow",
+    "tts:unicodeBidi",
     "tts:visibility",
-    "tts:display",
-    "tts:disparity",
-    "tts:fontSelectionStrategy",
-    "tts:position",
+    "tts:wrapOption",
+    "tts:writingMode",
+    "tts:zIndex",
     "itts:forcedDisplay",
     "itts:fillLineGap",
 ];
@@ -1028,27 +1062,65 @@ fn collect_p_inline_extras(e: &Element) -> String {
 
 /// Canonical attribute order on `<region>`. `xml:id` is emitted by the
 /// caller so it's not in this list.
+///
+/// A `<region>` carries its full styling set verbatim through the
+/// `ttml_region.<id>` metadata channel (regions aren't projected onto
+/// `SubtitleStyle` fields), so the order is the complete TTML2 §10.2
+/// styling-attribute vocabulary (§10.2.2 `tts:backgroundClip` …
+/// §10.2.52 `tts:zIndex` in `docs/subtitles/ttml2-w3c.html`), with the
+/// `style` style-reference attribute and the two IMSC `itts:` extension
+/// attributes trailing the `tts:` vocabulary.
 const REGION_ATTR_ORDER: &[&str] = &[
-    "tts:origin",
-    "tts:extent",
-    "tts:padding",
+    "tts:backgroundClip",
     "tts:backgroundColor",
+    "tts:backgroundExtent",
+    "tts:backgroundImage",
+    "tts:backgroundOrigin",
+    "tts:backgroundPosition",
+    "tts:backgroundRepeat",
+    "tts:border",
+    "tts:bpd",
     "tts:color",
-    "tts:displayAlign",
-    "tts:textAlign",
-    "tts:fontFamily",
-    "tts:fontSize",
-    "tts:fontWeight",
-    "tts:fontStyle",
-    "tts:lineHeight",
-    "tts:opacity",
-    "tts:overflow",
-    "tts:showBackground",
-    "tts:visibility",
-    "tts:writingMode",
-    "tts:wrapOption",
     "tts:direction",
     "tts:disparity",
+    "tts:display",
+    "tts:displayAlign",
+    "tts:extent",
+    "tts:fontFamily",
+    "tts:fontKerning",
+    "tts:fontSelectionStrategy",
+    "tts:fontShear",
+    "tts:fontSize",
+    "tts:fontStyle",
+    "tts:fontVariant",
+    "tts:fontWeight",
+    "tts:ipd",
+    "tts:letterSpacing",
+    "tts:lineHeight",
+    "tts:lineShear",
+    "tts:luminanceGain",
+    "tts:opacity",
+    "tts:origin",
+    "tts:overflow",
+    "tts:padding",
+    "tts:position",
+    "tts:ruby",
+    "tts:rubyAlign",
+    "tts:rubyPosition",
+    "tts:rubyReserve",
+    "tts:shear",
+    "tts:showBackground",
+    "tts:textAlign",
+    "tts:textCombine",
+    "tts:textEmphasis",
+    "tts:textOrientation",
+    "tts:textOutline",
+    "tts:textShadow",
+    "tts:unicodeBidi",
+    "tts:visibility",
+    "tts:wrapOption",
+    "tts:writingMode",
+    "tts:zIndex",
     "style", // region may reference a named style for inheritance
     "itts:forcedDisplay",
     "itts:fillLineGap",
@@ -1856,12 +1928,14 @@ mod tests {
     #[test]
     fn imsc1_region_canonical_attr_order() {
         // Inputs deliberately scrambled — output should follow
-        // REGION_ATTR_ORDER (origin / extent / displayAlign / textAlign / …).
+        // REGION_ATTR_ORDER, which mirrors the TTML2 §10.2 styling-attribute
+        // vocabulary: displayAlign (§10.2.15) < extent (§10.2.16) <
+        // origin (§10.2.31) < textAlign (§10.2.41).
         let src = r##"<?xml version="1.0"?>
 <tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling">
   <head>
     <layout>
-      <region xml:id="r" tts:textAlign="center" tts:displayAlign="after" tts:extent="80% 10%" tts:origin="10% 80%"/>
+      <region xml:id="r" tts:textAlign="center" tts:origin="10% 80%" tts:extent="80% 10%" tts:displayAlign="after"/>
     </layout>
   </head>
   <body><div><p begin="0s" end="1s">x</p></div></body>
@@ -1877,9 +1951,9 @@ mod tests {
         let i_extent = region.find("tts:extent").unwrap();
         let i_display = region.find("tts:displayAlign").unwrap();
         let i_text = region.find("tts:textAlign").unwrap();
-        assert!(i_origin < i_extent);
-        assert!(i_extent < i_display);
-        assert!(i_display < i_text);
+        assert!(i_display < i_extent);
+        assert!(i_extent < i_origin);
+        assert!(i_origin < i_text);
     }
 
     #[test]

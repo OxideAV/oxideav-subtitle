@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TTML round-trips the full TTML2 §10.2 styling-attribute vocabulary.
+  The `<style>`, `<region>`, and inline `<p>` extras channels now carry
+  every §10.2 styling attribute the IR does not otherwise model — adding
+  `tts:backgroundClip` / `backgroundExtent` / `backgroundImage` /
+  `backgroundOrigin` / `backgroundPosition` / `backgroundRepeat`,
+  `tts:border`, `tts:bpd` / `ipd`, `tts:fontKerning`, `tts:fontShear`,
+  `tts:fontVariant`, `tts:letterSpacing`, `tts:lineShear`,
+  `tts:luminanceGain`, `tts:ruby` / `rubyPosition` / `rubyReserve`,
+  `tts:textCombine`, `tts:textEmphasis`, `tts:textOrientation`, and
+  `tts:zIndex` to the set that previously survived a parse → write
+  cycle. The canonical attribute order on the synthesised `<style>` /
+  `<region>` / `<p>` now follows the spec's §10.2 numbering
+  (§10.2.2 `tts:backgroundClip` … §10.2.52 `tts:zIndex`) so re-emit
+  stays byte-stable. Previously these attributes were dropped on the
+  re-emit. The seven `SubtitleStyle`-modelled names continue to
+  round-trip through the IR fields rather than the verbatim extras.
+
 - TTML `xml:space` whitespace handling (TTML2 §8.2.10). The `<p>` cue
   parser now normalizes inline text per the resolved whitespace mode
   instead of carrying authored line-formatting verbatim. In the

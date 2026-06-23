@@ -399,11 +399,12 @@ fn inline_p_styling_unmodelled_attrs_ride_extras() {
         .find(|(k, _)| k == "ttml_p_extra.0")
         .map(|(_, v)| v.as_str())
         .expect("inline IR-unmodelled tts:* attrs on <p> ride ttml_p_extra.0");
-    // Canonical order: textAlign before lineHeight before opacity.
+    // Canonical TTML2 §10.2 order: lineHeight (§10.2.27) before
+    // opacity (§10.2.30) before textAlign (§10.2.41).
     let i_ta = extras.find("tts:textAlign").unwrap();
     let i_lh = extras.find("tts:lineHeight").unwrap();
     let i_op = extras.find("tts:opacity").unwrap();
-    assert!(i_ta < i_lh && i_lh < i_op, "canonical order: {}", extras);
+    assert!(i_lh < i_op && i_op < i_ta, "canonical order: {}", extras);
     assert!(extras.contains("tts:textAlign=\"center\""));
     assert!(extras.contains("tts:lineHeight=\"125%\""));
     assert!(extras.contains("tts:opacity=\"0.8\""));
@@ -500,4 +501,169 @@ fn imsc1_region_without_cue_ref_still_round_trips() {
     let s = String::from_utf8(ttml::write(&t)).unwrap();
     assert!(s.contains("<region xml:id=\"r1\""), "{}", s);
     assert!(s.contains("tts:origin=\"0% 0%\""));
+}
+
+// ---------------------------------------------------------------------------
+// TTML2 §10.2 styling-attribute vocabulary preservation.
+//
+// REGION_ATTR_ORDER and STYLE_EXTRA_ORDER now carry the full §10.2
+// vocabulary (`docs/subtitles/ttml2-w3c.html`, §10.2.2 `tts:backgroundClip`
+// through §10.2.52 `tts:zIndex`), so attributes the IR does not otherwise
+// model survive a parse -> write cycle instead of being dropped.
+
+#[test]
+fn region_extended_vocabulary_round_trips_verbatim() {
+    // A <region> carrying §10.2 attributes the IR doesn't model:
+    // border (§10.2.9), letterSpacing (§10.2.26), ruby (§10.2.35),
+    // rubyPosition (§10.2.37), textEmphasis (§10.2.44),
+    // textOrientation (§10.2.45), zIndex (§10.2.52). All must survive.
+    let src = "<?xml version=\"1.0\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <head><layout>\n\
+    <region xml:id=\"r\" tts:zIndex=\"5\" tts:border=\"2px solid white\" \
+tts:letterSpacing=\"0.1em\" tts:textEmphasis=\"dot\" tts:textOrientation=\"upright\" \
+tts:ruby=\"container\" tts:rubyPosition=\"before\" tts:extent=\"80% 20%\"/>\n\
+  </layout></head>\n\
+  <body><div><p begin=\"0s\" end=\"1s\" region=\"r\">x</p></div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    let region = t
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "ttml_region.r")
+        .map(|(_, v)| v.as_str())
+        .expect("region captured");
+    for needle in [
+        "tts:border=\"2px solid white\"",
+        "tts:letterSpacing=\"0.1em\"",
+        "tts:ruby=\"container\"",
+        "tts:rubyPosition=\"before\"",
+        "tts:textEmphasis=\"dot\"",
+        "tts:textOrientation=\"upright\"",
+        "tts:zIndex=\"5\"",
+        "tts:extent=\"80% 20%\"",
+    ] {
+        assert!(region.contains(needle), "missing {needle} in {region}");
+    }
+
+    // §10.2 canonical order: border (§10.2.9) < extent (§10.2.16) <
+    // letterSpacing (§10.2.26) < ruby (§10.2.35) < rubyPosition (§10.2.37)
+    // < textEmphasis (§10.2.44) < textOrientation (§10.2.45) <
+    // zIndex (§10.2.52).
+    let i = |n: &str| region.find(n).unwrap();
+    assert!(i("tts:border") < i("tts:extent"));
+    assert!(i("tts:extent") < i("tts:letterSpacing"));
+    assert!(i("tts:letterSpacing") < i("tts:ruby="));
+    assert!(i("tts:ruby=") < i("tts:rubyPosition"));
+    assert!(i("tts:rubyPosition") < i("tts:textEmphasis"));
+    assert!(i("tts:textEmphasis") < i("tts:textOrientation"));
+    assert!(i("tts:textOrientation") < i("tts:zIndex"));
+
+    // The full vocabulary re-emits on the synthesised <region>.
+    let s = String::from_utf8(ttml::write(&t)).unwrap();
+    assert!(s.contains("tts:textEmphasis=\"dot\""), "{s}");
+    assert!(s.contains("tts:zIndex=\"5\""), "{s}");
+    assert!(s.contains("tts:ruby=\"container\""), "{s}");
+
+    // Re-parse: a second round trip is byte-stable for the region extras.
+    let t2 = ttml::parse(s.as_bytes()).unwrap();
+    let region2 = t2
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "ttml_region.r")
+        .map(|(_, v)| v.as_str())
+        .expect("region re-captured");
+    assert_eq!(region, region2, "region extras must be idempotent");
+}
+
+#[test]
+fn style_extended_vocabulary_round_trips_verbatim() {
+    // A <style> carrying §10.2 attributes with no SubtitleStyle home:
+    // backgroundImage (§10.2.5), fontKerning (§10.2.18),
+    // fontShear (§10.2.20), letterSpacing (§10.2.26),
+    // textCombine (§10.2.42), zIndex (§10.2.52).
+    let src = "<?xml version=\"1.0\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <head><styling>\n\
+    <style xml:id=\"s1\" tts:color=\"white\" tts:zIndex=\"3\" \
+tts:fontKerning=\"normal\" tts:fontShear=\"10%\" tts:letterSpacing=\"2px\" \
+tts:textCombine=\"all\" tts:backgroundImage=\"url(bg.png)\"/>\n\
+  </styling></head>\n\
+  <body><div><p begin=\"0s\" end=\"1s\" style=\"s1\">x</p></div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    let extras = t
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "ttml_style_extra.s1")
+        .map(|(_, v)| v.as_str())
+        .expect("style extras captured");
+    for needle in [
+        "tts:backgroundImage=\"url(bg.png)\"",
+        "tts:fontKerning=\"normal\"",
+        "tts:fontShear=\"10%\"",
+        "tts:letterSpacing=\"2px\"",
+        "tts:textCombine=\"all\"",
+        "tts:zIndex=\"3\"",
+    ] {
+        assert!(extras.contains(needle), "missing {needle} in {extras}");
+    }
+    // tts:color is IR-modelled (SubtitleStyle.primary_color), so it must
+    // NOT be duplicated into the extras channel.
+    assert!(
+        !extras.contains("tts:color="),
+        "color leaked into extras: {extras}"
+    );
+
+    // §10.2 order: backgroundImage (§10.2.5) < fontKerning (§10.2.18) <
+    // fontShear (§10.2.20) < letterSpacing (§10.2.26) <
+    // textCombine (§10.2.42) < zIndex (§10.2.52).
+    let i = |n: &str| extras.find(n).unwrap();
+    assert!(i("tts:backgroundImage") < i("tts:fontKerning"));
+    assert!(i("tts:fontKerning") < i("tts:fontShear"));
+    assert!(i("tts:fontShear") < i("tts:letterSpacing"));
+    assert!(i("tts:letterSpacing") < i("tts:textCombine"));
+    assert!(i("tts:textCombine") < i("tts:zIndex"));
+
+    // The extras re-emit on the synthesised <style>.
+    let s = String::from_utf8(ttml::write(&t)).unwrap();
+    assert!(s.contains("tts:textCombine=\"all\""), "{s}");
+    assert!(s.contains("tts:backgroundImage=\"url(bg.png)\""), "{s}");
+}
+
+#[test]
+fn inline_p_extended_vocabulary_round_trips() {
+    // Inline §10.2 attributes the IR doesn't model on a <p> ride the
+    // per-cue extras channel: textEmphasis (§10.2.44),
+    // textOrientation (§10.2.45), letterSpacing (§10.2.26).
+    let src = "<?xml version=\"1.0\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <body><div>\n\
+    <p begin=\"0s\" end=\"1s\" tts:textEmphasis=\"circle\" \
+tts:textOrientation=\"sideways\" tts:letterSpacing=\"0.05em\">x</p>\n\
+  </div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    let extras = t
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "ttml_p_extra.0")
+        .map(|(_, v)| v.as_str())
+        .expect("inline extras captured");
+    assert!(extras.contains("tts:textEmphasis=\"circle\""), "{extras}");
+    assert!(
+        extras.contains("tts:textOrientation=\"sideways\""),
+        "{extras}"
+    );
+    assert!(extras.contains("tts:letterSpacing=\"0.05em\""), "{extras}");
+    // §10.2 order: letterSpacing (§10.2.26) < textEmphasis (§10.2.44) <
+    // textOrientation (§10.2.45).
+    let i = |n: &str| extras.find(n).unwrap();
+    assert!(i("tts:letterSpacing") < i("tts:textEmphasis"));
+    assert!(i("tts:textEmphasis") < i("tts:textOrientation"));
+
+    // The inline extras regrow on the <p> at write time.
+    let s = String::from_utf8(ttml::write(&t)).unwrap();
+    assert!(s.contains("tts:textEmphasis=\"circle\""), "{s}");
+    assert!(s.contains("tts:textOrientation=\"sideways\""), "{s}");
 }

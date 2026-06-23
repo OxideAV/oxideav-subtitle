@@ -568,10 +568,11 @@ The IMSC1 features that don't fit existing IR fields are captured as
 track-level metadata so a parse → write round-trip is byte-faithful:
 
 * `<head><layout><region xml:id="X" tts:.../></layout></head>` — every
-  region surfaces as `ttml_region.<id>` carrying the full attribute
-  list in canonical spec order (`origin`, `extent`, `padding`,
-  `backgroundColor`, `color`, `displayAlign`, `textAlign`, …,
-  `itts:forcedDisplay`, `itts:fillLineGap`).
+  region surfaces as `ttml_region.<id>` carrying the full TTML2 §10.2
+  styling-attribute vocabulary in canonical spec order
+  (§10.2.2 `tts:backgroundClip` … §10.2.52 `tts:zIndex`), followed by
+  the `style` style-reference attribute and the IMSC `itts:forcedDisplay`
+  / `itts:fillLineGap` extension attributes.
 * `<p region="X">` cue-region references ride alongside the cue in
   `ttml_cue_region.<idx>`.
 * Inline `tts:*` styling attributes on `<p>` (TTML2 §8.1.5 — "An author
@@ -588,13 +589,21 @@ track-level metadata so a parse → write round-trip is byte-faithful:
   order. A parse → write → parse cycle is byte-stable for the inline-
   styled `<p>`; the `xmlns:itts` namespace binding is regrown on `<tt>`
   whenever a `ttml_p_extra` carries an IMSC1 `itts:*` attribute.
-* IR-unmodelled `tts:*` / `itts:*` attributes on `<style>` —
-  `displayAlign`, `extent`, `origin`, `padding`, `lineHeight`,
-  `opacity`, `textOutline`, `textShadow`, `writingMode`, `wrapOption`,
-  `direction`, `rubyAlign`, `shear`, `showBackground`, `visibility`,
-  `display`, `disparity`, `fontSelectionStrategy`, `position`,
-  `itts:forcedDisplay`, `itts:fillLineGap` — survive as
-  `ttml_style_extra.<id>` in canonical order.
+* IR-unmodelled `tts:*` / `itts:*` attributes on `<style>` — the full
+  TTML2 §10.2 styling-attribute vocabulary minus the seven
+  `SubtitleStyle`-modelled names, i.e. `tts:backgroundClip` /
+  `backgroundExtent` / `backgroundImage` / `backgroundOrigin` /
+  `backgroundPosition` / `backgroundRepeat`, `border`, `bpd` / `ipd`,
+  `direction`, `disparity`, `display`, `displayAlign`, `extent`,
+  `fontKerning`, `fontSelectionStrategy`, `fontShear`, `fontVariant`,
+  `letterSpacing`, `lineHeight`, `lineShear`, `luminanceGain`,
+  `opacity`, `origin`, `overflow`, `padding`, `position`, `ruby` /
+  `rubyAlign` / `rubyPosition` / `rubyReserve`, `shear`,
+  `showBackground`, `textCombine`, `textEmphasis`, `textOrientation`,
+  `textOutline`, `textShadow`, `unicodeBidi`, `visibility`,
+  `wrapOption`, `writingMode`, `zIndex`, plus `tts:textAlign` in its
+  `justify` value and `itts:forcedDisplay` / `itts:fillLineGap` —
+  survive as `ttml_style_extra.<id>` in canonical §10.2 order.
 * `<tt>` parameter attributes — `ttp:frameRate`, `ttp:tickRate`,
   `ttp:timeBase`, `ttp:profile`, `ttp:cellResolution`,
   `ttp:frameRateMultiplier`, `ttp:displayAspectRatio`,
