@@ -582,13 +582,15 @@ track-level metadata so a parse → write round-trip is byte-faithful:
   `tts:fontFamily`, `tts:fontSize`, `tts:fontWeight`, `tts:fontStyle`,
   `tts:textDecoration`) wrap the cue's content with the equivalent
   `Segment::Bold` / `Italic` / `Underline` / `Strike` / `Color` /
-  `Font` segments. IR-unmodelled inline attrs (the same
-  `displayAlign` / `lineHeight` / `opacity` / `textShadow` / … list as
-  `<style>` extras above, plus `tts:textAlign` in any value) ride a
-  per-cue `ttml_p_extra.<idx>` metadata channel in canonical spec
-  order. A parse → write → parse cycle is byte-stable for the inline-
-  styled `<p>`; the `xmlns:itts` namespace binding is regrown on `<tt>`
-  whenever a `ttml_p_extra` carries an IMSC1 `itts:*` attribute.
+  `Font` segments. IR-unmodelled inline attrs (the full §10.2 vocabulary
+  minus those six segment-modelled names — so the same `<style>`-extras
+  list above **plus** `tts:backgroundColor` in its canonical §10.2.3
+  position, since the inline path has no per-run background segment, and
+  `tts:textAlign` in any value) ride a per-cue `ttml_p_extra.<idx>`
+  metadata channel in canonical §10.2 order. A parse → write → parse
+  cycle is byte-stable for the inline-styled `<p>`; the `xmlns:itts`
+  namespace binding is regrown on `<tt>` whenever a `ttml_p_extra`
+  carries an IMSC1 `itts:*` attribute.
 * IR-unmodelled `tts:*` / `itts:*` attributes on `<style>` — the full
   TTML2 §10.2 styling-attribute vocabulary minus the seven
   `SubtitleStyle`-modelled names, i.e. `tts:backgroundClip` /

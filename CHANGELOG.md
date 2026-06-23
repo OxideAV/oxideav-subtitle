@@ -26,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-emit. The seven `SubtitleStyle`-modelled names continue to
   round-trip through the IR fields rather than the verbatim extras.
 
+### Fixed
+
+- TTML inline `tts:backgroundColor` on a `<p>` is now preserved through
+  a parse → write cycle. At the `<style>` / `<region>` level the
+  attribute maps onto `SubtitleStyle.back_color`, but the inline-styling
+  path has no per-run background segment, so an inline
+  `tts:backgroundColor` was previously dropped on re-emit. It now rides
+  the per-cue `ttml_p_extra.<idx>` channel (in its canonical §10.2.3
+  position), alongside the rest of the inline §10.2 vocabulary.
+
 - TTML `xml:space` whitespace handling (TTML2 §8.2.10). The `<p>` cue
   parser now normalizes inline text per the resolved whitespace mode
   instead of carrying authored line-formatting verbatim. In the

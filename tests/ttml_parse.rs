@@ -667,3 +667,54 @@ tts:textOrientation=\"sideways\" tts:letterSpacing=\"0.05em\">x</p>\n\
     assert!(s.contains("tts:textEmphasis=\"circle\""), "{s}");
     assert!(s.contains("tts:textOrientation=\"sideways\""), "{s}");
 }
+
+#[test]
+fn inline_p_background_color_round_trips_via_extras() {
+    // `tts:backgroundColor` (§10.2.3) maps onto `SubtitleStyle.back_color`
+    // at the `<style>` / `<region>` level, but `wrap_with_style` has no
+    // per-run background segment, so an inline `tts:backgroundColor` on a
+    // `<p>` must ride the per-cue extras channel to survive re-emit
+    // (it would otherwise be dropped). Pair it with an IR-modelled inline
+    // `tts:color` to confirm the color still wraps into a span while the
+    // background rides extras.
+    let src = "<?xml version=\"1.0\"?>\n\
+<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <body><div>\n\
+    <p begin=\"0s\" end=\"1s\" tts:color=\"#FFFFFF\" tts:backgroundColor=\"#00FF00\">x</p>\n\
+  </div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    let extras = t
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "ttml_p_extra.0")
+        .map(|(_, v)| v.as_str())
+        .expect("inline backgroundColor rides ttml_p_extra.0");
+    assert!(
+        extras.contains("tts:backgroundColor=\"#00FF00\""),
+        "{extras}"
+    );
+    // The IR-modelled color must NOT leak into the extras — it wraps a span.
+    assert!(
+        !extras.contains("tts:color="),
+        "color leaked into extras: {extras}"
+    );
+
+    let s = String::from_utf8(ttml::write(&t)).unwrap();
+    assert!(s.contains("tts:backgroundColor=\"#00FF00\""), "{s}");
+    // Color regrows as a span wrapper, not on the <p>.
+    assert!(s.contains("<span tts:color="), "{s}");
+
+    // Idempotent second round trip on the inline extras.
+    let t2 = ttml::parse(s.as_bytes()).unwrap();
+    let extras2 = t2
+        .metadata
+        .iter()
+        .find(|(k, _)| k == "ttml_p_extra.0")
+        .map(|(_, v)| v.as_str())
+        .expect("re-captured");
+    assert!(
+        extras2.contains("tts:backgroundColor=\"#00FF00\""),
+        "{extras2}"
+    );
+}

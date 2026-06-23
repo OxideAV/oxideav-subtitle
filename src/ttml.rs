@@ -1046,13 +1046,74 @@ fn p_has_modelled_inline_style(e: &Element) -> bool {
         .any(|name| attr(e, name).is_some())
 }
 
+/// Canonical attribute order for the inline `tts:*` / `itts:*`
+/// extras channel on a `<p>`.
+///
+/// This is the TTML2 §10.2 vocabulary minus the six names
+/// `wrap_with_style` projects onto the segment tree
+/// (`P_INLINE_MODELLED_ATTRS`). Unlike `STYLE_EXTRA_ORDER`, it
+/// **includes** `tts:backgroundColor` (§10.2.3): at the `<style>` /
+/// `<region>` level that attribute maps onto `SubtitleStyle.back_color`,
+/// but `wrap_with_style` has no per-run background segment, so an inline
+/// `tts:backgroundColor` on a `<p>` would otherwise be dropped on
+/// re-emit. Carrying it here makes the `<p>` round-trip byte-faithful.
+const P_INLINE_EXTRA_ORDER: &[&str] = &[
+    "tts:backgroundClip",
+    "tts:backgroundColor",
+    "tts:backgroundExtent",
+    "tts:backgroundImage",
+    "tts:backgroundOrigin",
+    "tts:backgroundPosition",
+    "tts:backgroundRepeat",
+    "tts:border",
+    "tts:bpd",
+    "tts:direction",
+    "tts:disparity",
+    "tts:display",
+    "tts:displayAlign",
+    "tts:extent",
+    "tts:fontKerning",
+    "tts:fontSelectionStrategy",
+    "tts:fontShear",
+    "tts:fontVariant",
+    "tts:ipd",
+    "tts:letterSpacing",
+    "tts:lineHeight",
+    "tts:lineShear",
+    "tts:luminanceGain",
+    "tts:opacity",
+    "tts:origin",
+    "tts:overflow",
+    "tts:padding",
+    "tts:position",
+    "tts:ruby",
+    "tts:rubyAlign",
+    "tts:rubyPosition",
+    "tts:rubyReserve",
+    "tts:shear",
+    "tts:showBackground",
+    "tts:textAlign",
+    "tts:textCombine",
+    "tts:textEmphasis",
+    "tts:textOrientation",
+    "tts:textOutline",
+    "tts:textShadow",
+    "tts:unicodeBidi",
+    "tts:visibility",
+    "tts:wrapOption",
+    "tts:writingMode",
+    "tts:zIndex",
+    "itts:forcedDisplay",
+    "itts:fillLineGap",
+];
+
 /// Collect the IR-unmodelled inline `tts:*` / `itts:*` attributes on a
-/// `<p>` (canonical order — `STYLE_EXTRA_ORDER`), so a parse → write
+/// `<p>` (canonical order — `P_INLINE_EXTRA_ORDER`), so a parse → write
 /// cycle replays them verbatim on the `<p>`. IR-modelled attrs are
 /// excluded because they round-trip through the wrapped segment tree.
 fn collect_p_inline_extras(e: &Element) -> String {
     let mut out = String::new();
-    for &name in STYLE_EXTRA_ORDER {
+    for &name in P_INLINE_EXTRA_ORDER {
         if let Some(v) = attr(e, name) {
             push_attr(&mut out, name, &v);
         }
