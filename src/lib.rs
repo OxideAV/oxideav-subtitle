@@ -52,6 +52,7 @@ pub mod aqtitle;
 pub mod ass_emit;
 pub mod ass_event;
 pub mod ass_resolve;
+pub mod ass_script;
 pub mod ass_script_info;
 pub mod ass_style_row;
 pub mod ass_tags;
@@ -91,6 +92,7 @@ pub use ass_resolve::{
     resolve_line, resolve_tokens, ClipRegion, LineLayout, Move, ResolvedLine, ResolvedSpan,
     ResolvedStyle, Rgba, StyleBase,
 };
+pub use ass_script::parse as parse_ass;
 pub use ass_script_info::{script_info, script_info_keys, AssScriptInfo, Collisions, WrapStyle};
 pub use ass_style_row::{parse_color, parse_format, parse_style_row, DEFAULT_V4PLUS_FORMAT};
 pub use ass_tags::{

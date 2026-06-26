@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Whole-document ASS / SSA parser (`ass_script::parse`, re-exported as
+  `parse_ass`). Reads a `.ass` / `.ssa` byte stream into a
+  `SubtitleTrack`, tying the four ASS helper layers together:
+  `[Script Info]` keys land in `track.metadata` under the
+  lowercase-snake-case IR convention (`script_info` reads them back
+  typed); `[V4+ Styles]` / `[V4 Styles]` rows become IR
+  `SubtitleStyle`s; and `[Events]` `Dialogue:` rows become
+  `SubtitleCue`s whose bodies are resolved against their style row into
+  IR `Segment`s (bold / italic / underline / strike / primary-colour /
+  karaoke wrapping, `\N` → `LineBreak`). `Comment:` rows are skipped,
+  times convert centiseconds → microseconds, and the parser never
+  fails (malformed rows are dropped).
+
 - ASS / SSA `[Events]` `Dialogue:` / `Comment:` line parsing
   (`ass_event` module). `parse_event` maps a row onto an `AssEvent`
   (`layer`/`marked`, start/end in centiseconds, style, name, margins,
