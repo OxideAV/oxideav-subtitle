@@ -4,9 +4,11 @@
 //! converters, and a text-to-RGBA rendering stack (bitmap font +
 //! compositor + `RenderedSubtitleDecoder` wrapper).
 //!
-//! ASS/SSA lives in its own sibling crate `oxideav-ass` because advanced
-//! rendering (animated tags, sub-pixel positioning, karaoke playback)
-//! needs substantial work that shouldn't clutter this hub. Bitmap-native
+//! The ASS / SSA **text-side** pipeline lives here (`ass_script` whole-file
+//! parse / write, `ass_style_row`, `ass_event`, `ass_resolve` override-tag
+//! style resolution, `ass_emit`, `ass_tags` tokenizer, `ass_script_info`).
+//! Advanced **rendering** (animated tags, sub-pixel positioning, karaoke
+//! playback) lives in the sibling `oxideav-ass` crate. Bitmap-native
 //! subtitle formats (PGS, DVB, VobSub) live in `oxideav-sub-image`.
 //!
 //! | Format        | Codec id      | Container name | Extensions       |

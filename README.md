@@ -302,6 +302,49 @@ track carries in `SubtitleTrack::metadata` into a typed
 `Timer` as `f64` percent, `WrapStyle` and `Collisions` as enums,
 `ScaledBorderAndShadow` as `bool` — leaving unknown keys untouched.
 
+## ASS / SSA parse → resolve → serialize pipeline
+
+The override-tag tokenizer feeds a full text-side ASS / SSA pipeline
+built from the spec (`docs/subtitles/ass/`), layered so each stage
+round-trips:
+
+* **`ass_style_row`** parses a `[V4+ Styles]` / `[V4 Styles]` `Style:`
+  row into a `StyleBase`, mapping each value onto a field **by the
+  `Format:` header name** (the spec: the Format line "defines how SSA
+  will interpret the Style definition lines … even if the field order is
+  changed"), so the SSA v4 layout (`TertiaryColour`, `AlphaLevel`,
+  legacy 1..=11 alignment) and the ASS V4+ layout (`OutlineColour`,
+  numpad alignment) parse through one path. `parse_color` decodes the
+  `&H[aa]bbggrr&` wire form (BGR byte order, alpha high byte inverted to
+  straight alpha) and the bare decimal long-integer form.
+
+* **`ass_resolve`** folds a Dialogue `Text` override stream over a
+  `StyleBase` into a `ResolvedLine`: a sequence of `ResolvedSpan`s (each
+  a visible-text run + the fully `ResolvedStyle` in effect) plus a
+  `LineLayout` carrying the whole-line property tags (`\pos`, `\move`,
+  `\org`, `\fad`/`\fade`, `\clip`/`\iclip`, `\an`/`\a`). Each tag's
+  parameterless form resets that field to the base; `\k` karaoke beats
+  ride each span's `karaoke_cs`; `\t(...)` is left for separate
+  animation.
+
+* **`ass_event`** parses an `[Events]` `Dialogue:` / `Comment:` row into
+  a typed `AssEvent` (by Format header name, the final field absorbing
+  embedded commas), with a `parse_time` / `fmt_time` codec for the ASS
+  `H:MM:SS.cc` timestamp.
+
+* **`ass_emit`** is the inverse — `serialize_line` emits a Dialogue
+  `Text` field from a `ResolvedLine` as a *minimal* override stream
+  (diffing each span against the running state), so re-resolving the
+  output reproduces the same spans + layout. `style_row_to_string` and
+  `event_to_string` round-trip a `StyleBase` / `AssEvent` back to a row.
+
+* **`ass_script`** ties it together: `parse` reads a whole `.ass` /
+  `.ssa` byte stream into a `SubtitleTrack` (Script-Info metadata, IR
+  styles, IR cues whose bodies are resolved into styled `Segment`s);
+  `write` serializes a `SubtitleTrack` back to a `.ass` V4+ stream.
+  `parse(write(track))` is a semantic round-trip over metadata, styles,
+  and cue timing + plain text.
+
 ## WebVTT signature and timestamp strictness
 
 The WebVTT parser enforces the §4.1 file-signature production and the
