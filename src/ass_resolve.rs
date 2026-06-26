@@ -243,7 +243,11 @@ pub struct ResolvedStyle {
 }
 
 impl ResolvedStyle {
-    fn from_base(b: &StyleBase) -> ResolvedStyle {
+    /// Build the resolved state a Dialogue line starts from — the base
+    /// style before any override applies. The same seed the resolver
+    /// uses internally, exposed so [`crate::ass_emit::serialize_line`]
+    /// can diff against it.
+    pub fn from_base(b: &StyleBase) -> ResolvedStyle {
         ResolvedStyle {
             font_name: b.font_name.clone(),
             font_size: b.font_size,

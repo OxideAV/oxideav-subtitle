@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA serialization (`ass_emit` module) — the inverse of the
+  resolve + style-row parsers. `serialize_line` emits a Dialogue `Text`
+  field from a `ResolvedLine` as a *minimal* override stream (diffing
+  each span's `ResolvedStyle` against the running state, prefixed by the
+  whole-line layout tags), giving a semantic round-trip: re-resolving
+  the output against the same base reproduces the same spans + layout.
+  `style_row_to_string` emits a `Style:` row for a chosen field order
+  (round-trips through `parse_style_row`), and `color_to_string` emits
+  the `&HaaBBGGRR&` wire form. `ResolvedStyle::from_base` is now public.
+
 - ASS / SSA `Style:` row parsing (`ass_style_row` module) into a
   `StyleBase` for resolution. `parse_format` reads the `[V4+ Styles]` /
   `[V4 Styles]` `Format:` header; `parse_style_row` maps each `Style:`

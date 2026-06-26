@@ -49,6 +49,7 @@
 //! this crate deals with standalone files only.
 
 pub mod aqtitle;
+pub mod ass_emit;
 pub mod ass_resolve;
 pub mod ass_script_info;
 pub mod ass_style_row;
@@ -81,6 +82,7 @@ use oxideav_core::RuntimeContext;
 use oxideav_core::{CodecCapabilities, CodecId, MediaType};
 use oxideav_core::{CodecInfo, CodecRegistry};
 
+pub use ass_emit::{color_to_string, serialize_line, style_row_to_string};
 pub use ass_resolve::{
     resolve_line, resolve_tokens, ClipRegion, LineLayout, Move, ResolvedLine, ResolvedSpan,
     ResolvedStyle, Rgba, StyleBase,
