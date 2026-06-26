@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA override-tag **style resolution** (`ass_resolve` module).
+  `resolve_line` folds a Dialogue `Text` override stream over a base
+  `Style:` row into a `ResolvedLine`: a sequence of `ResolvedSpan`s
+  (visible-text run + the fully `ResolvedStyle` in effect) plus a
+  `LineLayout` carrying the whole-line property tags (`\pos`, `\move`,
+  `\org`, `\fad`/`\fade`, `\clip`/`\iclip`, `\an`/`\a`). The fold
+  applies bold/weight, italic/underline/strike, the four-component
+  colour + alpha channels (`\c`/`\1c`–`\4c`, `\alpha`/`\1a`–`\4a`,
+  inverting the ASS `00`-opaque/`FF`-transparent convention to straight
+  alpha), font name/size/scale/spacing/encoding, the three rotation
+  axes, per-axis border + shadow, and the `\be`/`\blur` families, with
+  every tag's parameterless form resetting that field to the base.
+  `\k` karaoke beats ride each span's `karaoke_cs`; `\t(...)` is left
+  for separate animation. `StyleBase::from_style` seeds the base from an
+  `oxideav_core::SubtitleStyle`.
+
 - TTML round-trips the full TTML2 §10.2 styling-attribute vocabulary.
   The `<style>`, `<region>`, and inline `<p>` extras channels now carry
   every §10.2 styling attribute the IR does not otherwise model — adding

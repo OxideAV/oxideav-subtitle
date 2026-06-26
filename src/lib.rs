@@ -49,6 +49,7 @@
 //! this crate deals with standalone files only.
 
 pub mod aqtitle;
+pub mod ass_resolve;
 pub mod ass_script_info;
 pub mod ass_tags;
 pub mod codec;
@@ -79,6 +80,10 @@ use oxideav_core::RuntimeContext;
 use oxideav_core::{CodecCapabilities, CodecId, MediaType};
 use oxideav_core::{CodecInfo, CodecRegistry};
 
+pub use ass_resolve::{
+    resolve_line, resolve_tokens, ClipRegion, LineLayout, Move, ResolvedLine, ResolvedSpan,
+    ResolvedStyle, Rgba, StyleBase,
+};
 pub use ass_script_info::{script_info, script_info_keys, AssScriptInfo, Collisions, WrapStyle};
 pub use ass_tags::{
     AssBlurKind, AssBorderAxis, AssClipShape, AssColorTarget, AssFadeSpec, AssKaraokeKind,
