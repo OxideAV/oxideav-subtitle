@@ -91,7 +91,7 @@ impl Rgba {
 /// Every override tag's reset (`None`-parameter) form restores the
 /// matching field to this base. Construct one from a
 /// [`oxideav_core::SubtitleStyle`] with [`StyleBase::from_style`], or
-/// start from [`StyleBase::default`] (a libass-neutral 18pt opaque-white
+/// start from [`StyleBase::default`] (the spec-neutral 18pt opaque-white
 /// Arial) and override individual fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StyleBase {
@@ -324,7 +324,7 @@ pub struct Move {
 /// (`\pos`, `\move`, `\org`, `\fad` / `\fade`, `\clip` / `\iclip`,
 /// `\an` / `\a`). Per the Aegisub reference these "should appear at most
 /// once in a line"; when one appears more than once the *last* occurrence
-/// wins (libass applies the override in source order).
+/// in source order takes effect.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LineLayout {
     /// `\pos(x, y)`.
