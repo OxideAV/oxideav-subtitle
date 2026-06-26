@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA `Style:` row parsing (`ass_style_row` module) into a
+  `StyleBase` for resolution. `parse_format` reads the `[V4+ Styles]` /
+  `[V4 Styles]` `Format:` header; `parse_style_row` maps each `Style:`
+  value onto a field **by header name** (per the spec: the Format line
+  "defines how SSA will interpret the Style definition lines … even if
+  the field order is changed"), so the SSA v4 layout (`TertiaryColour`,
+  `AlphaLevel`, legacy 1..=11 alignment) and the ASS V4+ layout
+  (`OutlineColour`, numpad alignment) parse uniformly.
+  `DEFAULT_V4PLUS_FORMAT` is the canonical V4+ field order for rows with
+  no header. `parse_color` decodes the `&H[aa]bbggrr&` wire form (BGR
+  byte order, optional alpha high byte inverted to straight alpha) and
+  the bare decimal long-integer form. Bold parses as a boolean or an
+  explicit weight.
+
 - ASS / SSA override-tag **style resolution** (`ass_resolve` module).
   `resolve_line` folds a Dialogue `Text` override stream over a base
   `Style:` row into a `ResolvedLine`: a sequence of `ResolvedSpan`s

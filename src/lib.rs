@@ -51,6 +51,7 @@
 pub mod aqtitle;
 pub mod ass_resolve;
 pub mod ass_script_info;
+pub mod ass_style_row;
 pub mod ass_tags;
 pub mod codec;
 pub mod compositor;
@@ -85,6 +86,7 @@ pub use ass_resolve::{
     ResolvedStyle, Rgba, StyleBase,
 };
 pub use ass_script_info::{script_info, script_info_keys, AssScriptInfo, Collisions, WrapStyle};
+pub use ass_style_row::{parse_color, parse_format, parse_style_row, DEFAULT_V4PLUS_FORMAT};
 pub use ass_tags::{
     AssBlurKind, AssBorderAxis, AssClipShape, AssColorTarget, AssFadeSpec, AssKaraokeKind,
     AssRotationAxis, AssTag, AssToken, DrawCmd,
