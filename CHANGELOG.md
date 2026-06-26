@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Whole-document ASS writer (`ass_script::write`, re-exported as
+  `write_ass`) + an IR-segment → Dialogue-`Text` emitter
+  (`segments_to_ass_text`). `write` emits the three canonical sections
+  (`[Script Info]`, `[V4+ Styles]`, `[Events]`) each with the canonical
+  `Format:` header, rebuilding the `[Script Info]` key spellings (the
+  camelCase exceptions reverse exactly, other keys Title-Case their
+  underscore words) and converting microseconds back to centiseconds.
+  `parse(write(track))` is a semantic round-trip over metadata, styles,
+  and cue timing + plain text. `segments_to_ass_text` is the inverse of
+  the parser's segment wrapping — bold/italic/underline/strike wrap in
+  `{\b1}…{\b0}` etc., colour in `{\c&H..&}…{\c}`, karaoke prepends
+  `{\k<cs>}`, line breaks become `\N`.
+
 - Whole-document ASS / SSA parser (`ass_script::parse`, re-exported as
   `parse_ass`). Reads a `.ass` / `.ssa` byte stream into a
   `SubtitleTrack`, tying the four ASS helper layers together:

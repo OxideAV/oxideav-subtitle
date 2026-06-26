@@ -1,7 +1,7 @@
 //! Whole-document ASS / SSA parser tests.
 
 use oxideav_core::Segment;
-use oxideav_subtitle::ass_script::parse;
+use oxideav_subtitle::ass_script::{parse, segments_to_ass_text, write};
 use oxideav_subtitle::ass_script_info::script_info;
 use oxideav_subtitle::ir::{plain_text, SourceFormat};
 
@@ -148,4 +148,81 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,no header
     let track = parse(doc.as_bytes());
     assert_eq!(track.cues.len(), 1);
     assert_eq!(plain_text(&track.cues[0].segments), "no header");
+}
+
+#[test]
+fn segments_to_ass_text_emits_overrides() {
+    let segs = vec![
+        Segment::Text("Hello ".into()),
+        Segment::Bold(vec![Segment::Italic(vec![Segment::Text("world".into())])]),
+        Segment::Text("!".into()),
+    ];
+    let text = segments_to_ass_text(&segs);
+    // bold wraps italic wraps "world".
+    assert_eq!(text, "Hello {\\b1}{\\i1}world{\\i0}{\\b0}!");
+}
+
+#[test]
+fn segments_color_and_linebreak() {
+    let segs = vec![
+        Segment::Color {
+            rgb: (0xFF, 0, 0),
+            children: vec![Segment::Text("red".into())],
+        },
+        Segment::LineBreak,
+        Segment::Text("next".into()),
+    ];
+    // \c emits BGR: r=FF -> &H0000FF&
+    assert_eq!(segments_to_ass_text(&segs), "{\\c&H0000FF&}red{\\c}\\Nnext");
+}
+
+/// Whole-file round-trip: parse -> write -> re-parse preserves metadata,
+/// styles, and cue timing + plain text.
+#[test]
+fn whole_file_roundtrips() {
+    let first = parse(SAMPLE.as_bytes());
+    let bytes = write(&first);
+    let second = parse(&bytes);
+
+    // Metadata keys survive (compare as sets of (key, value)).
+    let mut m1 = first.metadata.clone();
+    let mut m2 = second.metadata.clone();
+    m1.sort();
+    m2.sort();
+    assert_eq!(
+        m1,
+        m2,
+        "metadata round-trip\n{}",
+        String::from_utf8_lossy(&bytes)
+    );
+
+    // Style count + names + key fields survive.
+    assert_eq!(first.styles.len(), second.styles.len());
+    for (a, b) in first.styles.iter().zip(&second.styles) {
+        assert_eq!(a.name, b.name);
+        assert_eq!(a.font_family, b.font_family);
+        assert_eq!(a.font_size, b.font_size);
+        assert_eq!(a.bold, b.bold);
+        assert_eq!(a.primary_color, b.primary_color);
+    }
+
+    // Cue count + timing + plain text + style ref survive.
+    assert_eq!(first.cues.len(), second.cues.len());
+    for (a, b) in first.cues.iter().zip(&second.cues) {
+        assert_eq!(a.start_us, b.start_us);
+        assert_eq!(a.end_us, b.end_us);
+        assert_eq!(a.style_ref, b.style_ref);
+        assert_eq!(plain_text(&a.segments), plain_text(&b.segments));
+    }
+}
+
+#[test]
+fn write_produces_parseable_sections() {
+    let track = parse(SAMPLE.as_bytes());
+    let text = String::from_utf8(write(&track)).unwrap();
+    assert!(text.contains("[Script Info]"));
+    assert!(text.contains("[V4+ Styles]"));
+    assert!(text.contains("[Events]"));
+    assert!(text.contains("Format: "));
+    assert!(text.contains("Dialogue: "));
 }

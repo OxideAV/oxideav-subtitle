@@ -39,6 +39,11 @@ fn cs_to_us(cs: i64) -> i64 {
     cs * 10_000
 }
 
+/// Microseconds → centiseconds (rounding to the nearest hundredth).
+fn us_to_cs(us: i64) -> i64 {
+    (us + 5_000) / 10_000
+}
+
 /// Parse a UTF-8 (or BOM-prefixed / UTF-16-BOM) `.ass` / `.ssa` payload
 /// into a [`SubtitleTrack`].
 ///
@@ -347,4 +352,206 @@ fn keyword<'a>(line: &'a str, kw: &str) -> Option<&'a str> {
         return rest.strip_prefix(':').map(|r| r.trim_start());
     }
     None
+}
+
+// ---------------------------------------------------------------------
+// Serialization (the inverse of `parse`).
+// ---------------------------------------------------------------------
+
+use crate::ass_emit::style_row_to_string;
+use crate::ass_event::event_to_string;
+use crate::ass_resolve::Rgba;
+
+/// Serialize a [`SubtitleTrack`] back into a `.ass` (V4+) byte stream.
+///
+/// Emits the three canonical sections in order — `[Script Info]`,
+/// `[V4+ Styles]`, `[Events]` — each with the canonical `Format:` header.
+/// `parse(write(track))` reproduces the track's metadata, styles, and
+/// cues (a semantic round-trip; the cue `Text` is rebuilt from the IR
+/// segments as a minimal override stream).
+pub fn write(track: &SubtitleTrack) -> Vec<u8> {
+    let mut out = String::new();
+
+    // [Script Info]
+    out.push_str("[Script Info]\n");
+    for (k, v) in &track.metadata {
+        out.push_str(&denormalise_key(k));
+        out.push_str(": ");
+        out.push_str(v);
+        out.push('\n');
+    }
+    out.push('\n');
+
+    // [V4+ Styles]
+    out.push_str("[V4+ Styles]\n");
+    out.push_str("Format: ");
+    out.push_str(&DEFAULT_V4PLUS_FORMAT.join(", "));
+    out.push('\n');
+    for style in &track.styles {
+        let base = ir_to_style_base(style);
+        out.push_str(&style_row_to_string(
+            &style.name,
+            &base,
+            DEFAULT_V4PLUS_FORMAT,
+            false,
+        ));
+        out.push('\n');
+    }
+    out.push('\n');
+
+    // [Events]
+    out.push_str("[Events]\n");
+    out.push_str("Format: ");
+    out.push_str(&DEFAULT_V4PLUS_EVENT.join(", "));
+    out.push('\n');
+    for cue in &track.cues {
+        let ev = AssEvent {
+            comment: false,
+            layer: 0,
+            start_cs: us_to_cs(cue.start_us),
+            end_cs: us_to_cs(cue.end_us),
+            style: cue.style_ref.clone().unwrap_or_default(),
+            name: String::new(),
+            margin_l: 0,
+            margin_r: 0,
+            margin_v: 0,
+            effect: String::new(),
+            text: segments_to_ass_text(&cue.segments),
+        };
+        out.push_str(&event_to_string(&ev, DEFAULT_V4PLUS_EVENT));
+        out.push('\n');
+    }
+
+    out.into_bytes()
+}
+
+/// Reverse [`normalise_key`] for the documented camelCase keys; other
+/// keys are reconstructed by Title-Casing each underscore-separated word
+/// (so `original_script` → `Original Script`). This recovers the
+/// documented `[Script Info]` spellings exactly and gives a stable,
+/// re-parseable spelling for everything else.
+fn denormalise_key(k: &str) -> String {
+    for (raw, ir) in CAMEL_KEY_MAP {
+        if k == *ir {
+            return raw.to_string();
+        }
+    }
+    // Title-case each underscore word.
+    k.split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(first) => first.to_ascii_uppercase().to_string() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Project an IR [`SubtitleStyle`] back onto a [`StyleBase`] for
+/// [`style_row_to_string`]. Inverse of [`style_base_to_ir`].
+fn ir_to_style_base(style: &SubtitleStyle) -> StyleBase {
+    let mut b = StyleBase::default();
+    if let Some(f) = &style.font_family {
+        b.font_name = f.clone();
+    }
+    if let Some(s) = style.font_size {
+        b.font_size = s as f64;
+    }
+    if let Some(c) = style.primary_color {
+        b.primary = Rgba::from_core(c);
+    }
+    if let Some(c) = style.outline_color {
+        b.outline_color = Rgba::from_core(c);
+    }
+    if let Some(c) = style.back_color {
+        b.shadow_color = Rgba::from_core(c);
+    }
+    b.bold = style.bold;
+    b.italic = style.italic;
+    b.underline = style.underline;
+    b.strike = style.strike;
+    if let Some(o) = style.outline {
+        b.border = o as f64;
+    }
+    if let Some(s) = style.shadow {
+        b.shadow = s as f64;
+    }
+    b.alignment = align_to_numpad(style.align);
+    b
+}
+
+/// Map the IR horizontal [`TextAlign`] back onto an ASS numpad value
+/// (bottom row). Inverse direction of [`numpad_to_align`] — the IR only
+/// models the horizontal axis, so the bottom band (1/2/3) is used.
+fn align_to_numpad(a: TextAlign) -> u8 {
+    match a {
+        TextAlign::Left | TextAlign::Start => 1,
+        TextAlign::Center => 2,
+        TextAlign::Right | TextAlign::End => 3,
+    }
+}
+
+/// Emit an IR segment tree as an ASS Dialogue `Text` field — the inverse
+/// of [`push_span_segments`].
+///
+/// Style nodes wrap their run in an opening override block and a closing
+/// reset block (`{\b1}…{\b0}`); colour nodes use `{\c&H..&}…{\c}`;
+/// karaoke nodes prepend `{\k<cs>}`. Line breaks become `\N`. Unmodelled
+/// `Segment::Raw` is emitted verbatim. The result parses back through
+/// [`crate::ass_resolve`] to the same styled spans.
+pub fn segments_to_ass_text(segments: &[Segment]) -> String {
+    let mut out = String::new();
+    emit_segments(segments, &mut out);
+    out
+}
+
+fn emit_segments(segments: &[Segment], out: &mut String) {
+    for seg in segments {
+        match seg {
+            Segment::Text(s) => out.push_str(s),
+            Segment::LineBreak => out.push_str("\\N"),
+            Segment::Bold(c) => {
+                out.push_str("{\\b1}");
+                emit_segments(c, out);
+                out.push_str("{\\b0}");
+            }
+            Segment::Italic(c) => {
+                out.push_str("{\\i1}");
+                emit_segments(c, out);
+                out.push_str("{\\i0}");
+            }
+            Segment::Underline(c) => {
+                out.push_str("{\\u1}");
+                emit_segments(c, out);
+                out.push_str("{\\u0}");
+            }
+            Segment::Strike(c) => {
+                out.push_str("{\\s1}");
+                emit_segments(c, out);
+                out.push_str("{\\s0}");
+            }
+            Segment::Color { rgb, children } => {
+                out.push_str(&format!(
+                    "{{\\c&H{:02X}{:02X}{:02X}&}}",
+                    rgb.2, rgb.1, rgb.0
+                ));
+                emit_segments(children, out);
+                out.push_str("{\\c}");
+            }
+            Segment::Karaoke { cs, children } => {
+                out.push_str(&format!("{{\\k{cs}}}"));
+                emit_segments(children, out);
+            }
+            // The IR Font / Voice / Class / Timestamp variants have no
+            // direct ASS spelling the resolver round-trips; emit their
+            // inner text without markup so no content is lost.
+            Segment::Font { children, .. }
+            | Segment::Voice { children, .. }
+            | Segment::Class { children, .. } => emit_segments(children, out),
+            Segment::Timestamp { .. } => {}
+            Segment::Raw(s) => out.push_str(s),
+        }
+    }
 }
