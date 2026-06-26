@@ -50,6 +50,7 @@
 
 pub mod aqtitle;
 pub mod ass_emit;
+pub mod ass_event;
 pub mod ass_resolve;
 pub mod ass_script_info;
 pub mod ass_style_row;
@@ -83,6 +84,9 @@ use oxideav_core::{CodecCapabilities, CodecId, MediaType};
 use oxideav_core::{CodecInfo, CodecRegistry};
 
 pub use ass_emit::{color_to_string, serialize_line, style_row_to_string};
+pub use ass_event::{
+    event_to_string, fmt_time, parse_event, parse_time, AssEvent, CentiSec, DEFAULT_EVENT_FORMAT,
+};
 pub use ass_resolve::{
     resolve_line, resolve_tokens, ClipRegion, LineLayout, Move, ResolvedLine, ResolvedSpan,
     ResolvedStyle, Rgba, StyleBase,

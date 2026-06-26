@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA `[Events]` `Dialogue:` / `Comment:` line parsing
+  (`ass_event` module). `parse_event` maps a row onto an `AssEvent`
+  (`layer`/`marked`, start/end in centiseconds, style, name, margins,
+  effect, verbatim text) **by Format header name**, with the final
+  positional field absorbing embedded commas per "the last field will
+  always be the Text field". `parse_time` / `fmt_time` codec the ASS
+  `H:MM:SS.cc` timestamp (accepting either a `.` or a `:` before the
+  hundredths, one or two hundredth digits, emitting the canonical dotted
+  form). `event_to_string` round-trips an `AssEvent` back to a row.
+  `DEFAULT_EVENT_FORMAT` is the canonical field order for header-less
+  rows.
+
 - ASS / SSA serialization (`ass_emit` module) — the inverse of the
   resolve + style-row parsers. `serialize_line` emits a Dialogue `Text`
   field from a `ResolvedLine` as a *minimal* override stream (diffing
