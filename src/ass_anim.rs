@@ -39,7 +39,7 @@
 //!   all tags before the \t tag specify. After t2 the style is … further
 //!   overridden by the given style overrides. Between t1 and t2 the style
 //!   is gradually animated … following the acceleration function." The
-//!   factor is "y = x with x ∈ [0;1] = (t - t1)/(t2 - t1)" raised to the
+//!   factor is "y = x with x ∈ `[0;1]` = (t - t1)/(t2 - t1)" raised to the
 //!   accel exponent (accel 1 linear, 0..1 fast-then-slow, >1 slow-then-fast).
 
 use crate::ass_resolve::{LineLayout, Move, ResolvedStyle, Rgba};
