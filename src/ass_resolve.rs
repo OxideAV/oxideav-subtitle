@@ -340,6 +340,9 @@ pub struct LineLayout {
     pub fade: Option<AssFadeSpec>,
     /// `\clip` / `\iclip` region.
     pub clip: Option<ClipRegion>,
+    /// `\q<style>` line-wrapping mode override, or `None` when the line
+    /// never overrode the script-level `WrapStyle`.
+    pub wrap: Option<crate::WrapStyle>,
 }
 
 /// The full resolution of a Dialogue `Text` field: per-run resolved
@@ -653,6 +656,8 @@ fn apply_tag(
         AssTag::Reset(_) => {
             *cur = ResolvedStyle::from_base(base);
         }
+        // `\q<style>` is a whole-line wrapping-mode override.
+        AssTag::WrapMode(mode) => layout.wrap = Some(*mode),
         // `\t(...)` describes a time-varying end state; a single static
         // resolved style can't represent it, so we leave the running
         // state untouched (a renderer animates separately). Likewise the

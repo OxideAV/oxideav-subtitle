@@ -267,6 +267,13 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   rides through verbatim (style names carry spaces, e.g.
   `\rAlternate Title`). The exact-prefix match keeps the `\fr*` rotation
   family distinct from `\r`.
+* The line-wrapping tag is typed: `\q0`–`\q3` parse to
+  `AssTag::WrapMode(WrapStyle)` ("Determine how line breaking is applied
+  to the subtitle line": `0` smart-even, `1` end-of-line, `2` no-wrap,
+  `3` smart-lower), reusing the same `WrapStyle` enum the `[Script Info]`
+  `WrapStyle` key models, and landing on `LineLayout.wrap` at resolution
+  time. Only a canonical single digit `0`..=`3` types — a bare `\q`,
+  multi-digit, signed, or out-of-range value stays verbatim untyped.
 * Every other tag is preserved verbatim as `AssTag::Other`, and non-tag
   text inside a block becomes `AssTag::Comment`, so
   `emit(&tokenize(s)) == s` byte-for-byte on every input (unterminated

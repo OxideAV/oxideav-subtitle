@@ -746,3 +746,37 @@ fn reset_example_from_reference_round_trips() {
     let tokens = tokenize(text);
     assert_eq!(emit(&tokens), text);
 }
+
+#[test]
+fn wrap_mode_tag_typed_and_round_trips() {
+    use oxideav_subtitle::WrapStyle;
+    for (text, want) in [
+        ("{\\q0}x", WrapStyle::SmartEven),
+        ("{\\q1}x", WrapStyle::EndOfLine),
+        ("{\\q2}x", WrapStyle::None),
+        ("{\\q3}x", WrapStyle::SmartLower),
+    ] {
+        let tokens = tokenize(text);
+        assert_eq!(emit(&tokens), text, "{text} round-trip");
+        assert_eq!(
+            tokens[0],
+            AssToken::Override(vec![AssTag::WrapMode(want)]),
+            "{text} typing"
+        );
+    }
+}
+
+#[test]
+fn wrap_mode_off_shape_stays_verbatim() {
+    // Bare \q, out-of-range, multi-digit, or signed values stay Other.
+    for body in ["q", "q4", "q10", "q-1", "q01"] {
+        let text = format!("{{\\{body}}}x");
+        let tokens = tokenize(&text);
+        assert_eq!(emit(&tokens), text, "{body} round-trip");
+        assert_eq!(
+            tokens[0],
+            AssToken::Override(vec![AssTag::Other(body.into())]),
+            "{body} stays Other"
+        );
+    }
+}

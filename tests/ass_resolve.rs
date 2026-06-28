@@ -364,3 +364,14 @@ fn reset_named_unknown_falls_back_to_line_base() {
     assert!(r.spans[0].style.bold);
     assert!(!r.spans[1].style.bold);
 }
+
+#[test]
+fn wrap_mode_lands_on_layout() {
+    use oxideav_subtitle::ass_resolve::resolve_line;
+    use oxideav_subtitle::WrapStyle;
+    let r = resolve_line("{\\q2}no wrap here", &base());
+    assert_eq!(r.layout.wrap, Some(WrapStyle::None));
+    // A line without \q leaves wrap None (defer to script-level WrapStyle).
+    let r2 = resolve_line("plain", &base());
+    assert_eq!(r2.layout.wrap, None);
+}

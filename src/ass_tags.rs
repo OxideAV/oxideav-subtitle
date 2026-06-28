@@ -599,6 +599,15 @@ pub enum AssTag {
     /// spaces, e.g. `\rAlternate`). The name rides through verbatim so
     /// [`emit`] stays byte-stable.
     Reset(Option<String>),
+    /// `\q<style>` — line-wrapping mode. Per the Aegisub reference,
+    /// "Determine how line breaking is applied to the subtitle line":
+    /// `0` smart-even, `1` end-of-line, `2` no-wrap (both `\n` and `\N`
+    /// break), `3` smart-lower. Reuses the [`crate::WrapStyle`] enum the
+    /// `[Script Info]` `WrapStyle` key already models. Only a canonical
+    /// single digit `0`..=`3` types; a bare `\q`, a multi-digit run, a
+    /// sign, or an out-of-range value keeps the whole tag verbatim
+    /// ([`AssTag::Other`]) so [`emit`] is byte-stable.
+    WrapMode(crate::WrapStyle),
     /// Any other tag, kept verbatim — the full body after the
     /// backslash, including parenthesised parameter lists (a `\fad` /
     /// `\fade` whose arguments fall outside the typed shape, a `\t(...)`
@@ -753,6 +762,9 @@ fn classify(tag: &str) -> AssTag {
         return typed;
     }
     if let Some(typed) = classify_reset(tag) {
+        return typed;
+    }
+    if let Some(typed) = classify_wrap(tag) {
         return typed;
     }
     let (head, arg) = match tag.chars().next() {
@@ -1302,6 +1314,22 @@ fn classify_reset(tag: &str) -> Option<AssTag> {
     } else {
         Some(AssTag::Reset(Some(rest.to_string())))
     }
+}
+
+/// Try the `\q<style>` line-wrapping tag. Only the canonical single
+/// digits `0`..=`3` type, mapping onto [`crate::WrapStyle`]; a bare `\q`,
+/// a multi-digit run, or an out-of-range / signed value returns `None` so
+/// the caller keeps it verbatim and [`emit`] stays byte-stable.
+fn classify_wrap(tag: &str) -> Option<AssTag> {
+    let rest = tag.strip_prefix('q')?;
+    let mode = match rest {
+        "0" => crate::WrapStyle::SmartEven,
+        "1" => crate::WrapStyle::EndOfLine,
+        "2" => crate::WrapStyle::None,
+        "3" => crate::WrapStyle::SmartLower,
+        _ => return None,
+    };
+    Some(AssTag::WrapMode(mode))
 }
 
 /// A canonical non-negative decimal run, returned verbatim. Rejects a
@@ -1897,6 +1925,16 @@ fn emit_tag(out: &mut String, tag: &AssTag) {
             if let Some(s) = style {
                 out.push_str(s);
             }
+        }
+        AssTag::WrapMode(mode) => {
+            let d = match mode {
+                crate::WrapStyle::SmartEven => '0',
+                crate::WrapStyle::EndOfLine => '1',
+                crate::WrapStyle::None => '2',
+                crate::WrapStyle::SmartLower => '3',
+            };
+            out.push_str("\\q");
+            out.push(d);
         }
         AssTag::Other(body) => {
             out.push('\\');

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `\q0`–`\q3` line-wrapping tag typing (`AssTag::WrapMode(WrapStyle)`),
+  reusing the `[Script Info]` `WrapStyle` enum and landing on the new
+  `LineLayout.wrap` field at resolution time. Only a canonical single
+  digit types; off-shape values stay verbatim. From the Aegisub `\q`
+  description.
+
 - `\r` / `\r<style>` style-reset tag typing (`AssTag::Reset(Option<String>)`)
   + resolution. The tokenizer types bare `\r` (`None`, reset to the line
   style) and `\r<style>` (`Some(name)`, verbatim named-style argument),
