@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `\t(...)` animated-transform evaluation in `ass_anim`
+  (`animate_style_at` / `transform_factor` / `collect_transforms`).
+  `transform_factor` computes the acceleration-curve factor
+  `((t-t1)/(t2-t1)).clamp(0,1)^accel` (accel `1` linear, `(0,1)`
+  fast-then-slow, `>1` slow-then-fast), defaulting the window to the
+  whole line when the `\t` carried no times. `animate_style_at`
+  interpolates the animatable `ResolvedStyle` fields (font size, x/y
+  scale, spacing, x/y/z rotation, x/y border, x/y shadow, edge/gaussian
+  blur, and the four primary/secondary/outline/shadow colours + alpha)
+  between the pre-`\t` state and the `\t`-modified state, snapping
+  non-animatable fields at the window end; stacked `\t(...)` blocks
+  compose. Verified against the reference worked examples
+  (`\t(0,5000,\frz3600)`, `\1c&HFF0000&\t(\1c&H0000FF&)`,
+  `\fscx0\fscy0\t(0,500,\fscx100\fscy100)`).
+
 - ASS / SSA time-varying override-tag evaluator (`ass_anim` module,
   re-exported `fade_alpha_at` / `position_at` / `FadeAlpha`). Given a
   resolved `LineLayout`, a line-relative time `t`, and the line's

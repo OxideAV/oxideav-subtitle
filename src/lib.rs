@@ -87,7 +87,9 @@ use oxideav_core::RuntimeContext;
 use oxideav_core::{CodecCapabilities, CodecId, MediaType};
 use oxideav_core::{CodecInfo, CodecRegistry};
 
-pub use ass_anim::{fade_alpha_at, position_at, FadeAlpha};
+pub use ass_anim::{
+    animate_style_at, collect_transforms, fade_alpha_at, position_at, transform_factor, FadeAlpha,
+};
 pub use ass_emit::{color_to_string, serialize_line, style_row_to_string};
 pub use ass_event::{
     event_to_string, fmt_time, parse_event, parse_time, AssEvent, CentiSec, DEFAULT_EVENT_FORMAT,
