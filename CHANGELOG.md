@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- ASS / SSA time-varying override-tag evaluator (`ass_anim` module,
+  re-exported `fade_alpha_at` / `position_at` / `FadeAlpha`). Given a
+  resolved `LineLayout`, a line-relative time `t`, and the line's
+  on-screen duration, `fade_alpha_at` evaluates `\fad(<fadein>,<fadeout>)`
+  (ramp `255→0`, hold, `0→255` against the duration) and the five-part
+  `\fade(a1,a2,a3,t1,t2,t3,t4)` schedule into the ASS-convention alpha
+  multiplier (`0` visible … `255` invisible); `position_at` evaluates
+  `\move(x1,y1,x2,y2[,t1,t2])` constant-speed interpolation (stationary
+  before `t1` / after `t2`, both-zero or absent times spanning the whole
+  line) and falls back to the static `\pos`. Both derived from the
+  Aegisub override-tag reference.
+
 - Whole-document ASS writer (`ass_script::write`, re-exported as
   `write_ass`) + an IR-segment → Dialogue-`Text` emitter
   (`segments_to_ass_text`). `write` emits the three canonical sections
