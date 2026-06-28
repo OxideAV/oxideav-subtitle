@@ -88,7 +88,8 @@ use oxideav_core::{CodecCapabilities, CodecId, MediaType};
 use oxideav_core::{CodecInfo, CodecRegistry};
 
 pub use ass_anim::{
-    animate_style_at, collect_transforms, fade_alpha_at, position_at, transform_factor, FadeAlpha,
+    animate_style_at, collect_transforms, fade_alpha_at, karaoke_fills, position_at,
+    transform_factor, FadeAlpha, KaraokeSyllable,
 };
 pub use ass_emit::{color_to_string, serialize_line, style_row_to_string};
 pub use ass_event::{

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `\k`-family karaoke fill evaluation in `ass_anim` (`karaoke_fills` /
+  `KaraokeSyllable`). Walks a Dialogue `Text` token stream into per-beat
+  syllables — each carrying its visible text, highlight kind, cumulative
+  start (running sum of earlier beat durations, centiseconds → ms), own
+  duration, and fill fraction at the evaluated time. Instant `\k` / `\ko`
+  step `0→1` at the syllable start; sweeping `\K` / `\kf` ramp linearly
+  across the syllable's own window. Text before the first beat is not a
+  karaoke syllable. From the Aegisub karaoke-tag descriptions.
+
 - `\t(...)` animated-transform evaluation in `ass_anim`
   (`animate_style_at` / `transform_factor` / `collect_transforms`).
   `transform_factor` computes the acceleration-curve factor

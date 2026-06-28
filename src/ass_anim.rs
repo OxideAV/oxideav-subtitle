@@ -452,6 +452,117 @@ pub fn collect_transforms(tokens: &[crate::ass_tags::AssToken]) -> Vec<&AssTag> 
     out
 }
 
+// --- \k-family karaoke fill evaluation ---------------------------------
+
+use crate::ass_tags::{AssKaraokeKind, AssToken};
+
+/// One karaoke syllable: the visible text run a `\k`-family beat opened,
+/// its highlight kind, its cumulative timeline window, and the fill state
+/// at the evaluated instant.
+///
+/// Produced by [`karaoke_fills`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct KaraokeSyllable {
+    /// The visible text of the syllable (between this beat and the next).
+    pub text: String,
+    /// Which highlight effect the beat selected.
+    pub kind: AssKaraokeKind,
+    /// Cumulative start time of the syllable in milliseconds, measured
+    /// from the line start (the sum of all earlier beat durations).
+    pub start_ms: u32,
+    /// The syllable's own beat duration in milliseconds.
+    pub dur_ms: u32,
+    /// Fill fraction at the evaluated time: `0.0` un-highlighted
+    /// (secondary fill / removed outline), `1.0` fully highlighted
+    /// (primary fill / outline present). For an instant `\k` / `\ko`
+    /// this is `0.0` before the syllable starts and `1.0` from its
+    /// start onward; for a sweeping `\K` / `\kf` it ramps linearly from
+    /// `0.0` to `1.0` across the syllable's own window.
+    pub fill: f64,
+}
+
+/// Evaluate the per-syllable karaoke fill of a Dialogue `Text` token
+/// stream at time `t` (milliseconds relative to the line start).
+///
+/// Each `\k` / `\K` / `\kf` / `\ko` beat opens a syllable whose start is
+/// the running sum of all earlier beat durations (centiseconds → ms) and
+/// whose duration is the beat's own value. The visible text up to the
+/// next beat (or the end of the line) is the syllable body; `\N` / `\n` /
+/// `\h` and intervening non-karaoke override blocks pass through into the
+/// current syllable's text.
+///
+/// Text that precedes the first `\k` beat carries no karaoke and is not
+/// returned as a syllable (a renderer draws it in the resolved primary
+/// fill). When the line has no `\k`-family tag the result is empty.
+pub fn karaoke_fills(tokens: &[AssToken], t: i64) -> Vec<KaraokeSyllable> {
+    let mut out: Vec<KaraokeSyllable> = Vec::new();
+    // Cumulative start of the syllable currently being accumulated, in ms.
+    let mut cursor_ms: u32 = 0;
+    // Index in `out` of the syllable currently accumulating text, if any.
+    let mut open: Option<usize> = None;
+
+    for tok in tokens {
+        match tok {
+            AssToken::Text(s) => push_syllable_text(&mut out, open, s),
+            AssToken::SoftBreak => push_syllable_text(&mut out, open, " "),
+            AssToken::HardBreak => push_syllable_text(&mut out, open, "\n"),
+            AssToken::HardSpace => push_syllable_text(&mut out, open, "\u{00A0}"),
+            AssToken::Override(tags) => {
+                for tag in tags {
+                    if let AssTag::Karaoke { kind, centisec } = tag {
+                        let dur_ms = centisec.saturating_mul(10);
+                        out.push(KaraokeSyllable {
+                            text: String::new(),
+                            kind: *kind,
+                            start_ms: cursor_ms,
+                            dur_ms,
+                            fill: 0.0,
+                        });
+                        open = Some(out.len() - 1);
+                        cursor_ms = cursor_ms.saturating_add(dur_ms);
+                    }
+                }
+            }
+        }
+    }
+
+    // Resolve every syllable's fill at time t now that windows are known.
+    for syl in &mut out {
+        syl.fill = syllable_fill(syl.kind, syl.start_ms as i64, syl.dur_ms as i64, t);
+    }
+    out
+}
+
+fn push_syllable_text(out: &mut [KaraokeSyllable], open: Option<usize>, s: &str) {
+    if let Some(i) = open {
+        out[i].text.push_str(s);
+    }
+}
+
+/// Fill fraction of one syllable at time `t` (ms). Instant kinds (`\k`,
+/// `\ko`) step from `0.0` to `1.0` at the syllable start; sweeping kinds
+/// (`\K`, `\kf`) ramp linearly across the syllable's own duration.
+fn syllable_fill(kind: AssKaraokeKind, start_ms: i64, dur_ms: i64, t: i64) -> f64 {
+    match kind {
+        AssKaraokeKind::Instant | AssKaraokeKind::Outline => {
+            if t >= start_ms {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        AssKaraokeKind::Sweep | AssKaraokeKind::SweepCap => {
+            if t <= start_ms {
+                0.0
+            } else if dur_ms <= 0 || t >= start_ms + dur_ms {
+                1.0
+            } else {
+                (t - start_ms) as f64 / dur_ms as f64
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,5 +799,76 @@ mod tests {
         let end = animate_style_at(base, &xforms, 1000, 1000);
         assert!((end.scale_x - 200.0).abs() < 1e-6);
         assert!((end.angle_z - 90.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn karaoke_no_tag_is_empty() {
+        let toks = tokenize("plain line");
+        assert!(karaoke_fills(&toks, 100).is_empty());
+    }
+
+    #[test]
+    fn karaoke_instant_steps_at_boundary() {
+        // {\k50}Ka{\k50}ra: two 50cs (500ms) instant syllables.
+        let toks = tokenize("{\\k50}Ka{\\k50}ra");
+        // At t=0: neither has started (start at 0 -> first is filled).
+        let f0 = karaoke_fills(&toks, 0);
+        assert_eq!(f0.len(), 2);
+        assert_eq!(f0[0].text, "Ka");
+        assert_eq!(f0[0].start_ms, 0);
+        assert_eq!(f0[0].dur_ms, 500);
+        assert_eq!(f0[0].fill, 1.0); // started at t>=0
+        assert_eq!(f0[1].start_ms, 500);
+        assert_eq!(f0[1].fill, 0.0);
+        // At t=600ms: both syllables have started.
+        let f600 = karaoke_fills(&toks, 600);
+        assert_eq!(f600[0].fill, 1.0);
+        assert_eq!(f600[1].fill, 1.0);
+    }
+
+    #[test]
+    fn karaoke_sweep_ramps_across_window() {
+        // {\kf100}Sweep: one 100cs (1000ms) sweep syllable.
+        let toks = tokenize("{\\kf100}Sweep");
+        assert_eq!(karaoke_fills(&toks, 0)[0].fill, 0.0);
+        assert_eq!(karaoke_fills(&toks, 500)[0].fill, 0.5);
+        assert_eq!(karaoke_fills(&toks, 1000)[0].fill, 1.0);
+        assert_eq!(karaoke_fills(&toks, 2000)[0].fill, 1.0);
+    }
+
+    #[test]
+    fn karaoke_sweep_cap_matches_kf() {
+        // \K is identical to \kf per spec.
+        let toks = tokenize("{\\K100}Sweep");
+        assert_eq!(karaoke_fills(&toks, 500)[0].kind, AssKaraokeKind::SweepCap);
+        assert_eq!(karaoke_fills(&toks, 500)[0].fill, 0.5);
+    }
+
+    #[test]
+    fn karaoke_outline_is_instant() {
+        let toks = tokenize("{\\ko30}Edge");
+        let f = karaoke_fills(&toks, 100);
+        assert_eq!(f[0].kind, AssKaraokeKind::Outline);
+        assert_eq!(f[0].fill, 1.0); // instant, started
+        assert_eq!(f[0].dur_ms, 300);
+    }
+
+    #[test]
+    fn karaoke_text_before_first_beat_not_a_syllable() {
+        // "Intro " precedes the first \k and is not karaoke-marked.
+        let toks = tokenize("Intro {\\k50}beat");
+        let f = karaoke_fills(&toks, 0);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].text, "beat");
+    }
+
+    #[test]
+    fn karaoke_timeline_accumulates() {
+        // Three beats of 20/30/40 cs: starts at 0/200/500 ms.
+        let toks = tokenize("{\\k20}a{\\k30}b{\\k40}c");
+        let f = karaoke_fills(&toks, 0);
+        assert_eq!(f[0].start_ms, 0);
+        assert_eq!(f[1].start_ms, 200);
+        assert_eq!(f[2].start_ms, 500);
     }
 }
