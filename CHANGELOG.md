@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across the syllable's own window. Text before the first beat is not a
   karaoke syllable. From the Aegisub karaoke-tag descriptions.
 
+- Combined per-frame line evaluator `evaluate_line_at` in `ass_anim`
+  (`EvaluatedLine` / `EvaluatedSpan`). Given a resolved line, its token
+  stream, a time `t`, and the duration, it returns the effective
+  `\move`/`\pos` position, the `\fad`/`\fade` fade alpha, and per-run
+  animated style + karaoke fill in one call. `\t(...)` transforms are
+  scoped *per span* — a `\t` only animates the runs after it — by
+  re-walking the tokens to learn each run's in-scope transform set, so a
+  mid-line `{\t(...)}` animates only the following spans. The single
+  entry point a renderer drives each output frame.
+
 - `\t(...)` animated-transform evaluation in `ass_anim`
   (`animate_style_at` / `transform_factor` / `collect_transforms`).
   `transform_factor` computes the acceleration-curve factor

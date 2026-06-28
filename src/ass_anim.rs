@@ -563,6 +563,127 @@ fn syllable_fill(kind: AssKaraokeKind, start_ms: i64, dur_ms: i64, t: i64) -> f6
     }
 }
 
+// --- combined per-frame line evaluation --------------------------------
+
+use crate::ass_resolve::ResolvedLine;
+
+/// One visible run of an [`EvaluatedLine`]: the run's text plus the
+/// fully animated [`ResolvedStyle`] in effect over it at the evaluated
+/// instant and its karaoke fill fraction (`1.0` when the run carries no
+/// `\k` beat).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EvaluatedSpan {
+    /// The visible text of the run.
+    pub text: String,
+    /// The animated style at the evaluated time (the resolved span style
+    /// with every active `\t(...)` applied for the run's `\t` scope).
+    pub style: ResolvedStyle,
+    /// Karaoke fill fraction: `0.0` un-highlighted, `1.0` highlighted;
+    /// `1.0` for a run with no `\k`-family beat.
+    pub karaoke_fill: f64,
+}
+
+/// The full evaluation of a Dialogue line at one instant: the effective
+/// screen position, fade opacity, and per-run animated style + karaoke
+/// fill. A renderer calls [`evaluate_line_at`] once per output frame and
+/// draws each [`EvaluatedSpan`] at `position` (or alignment-driven
+/// default when `None`) with `fade_alpha` multiplied into every run's
+/// component alpha.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EvaluatedLine {
+    /// Effective `(x, y)` from `\move` / `\pos`, or `None` (default
+    /// placement) when the line carries neither.
+    pub position: Option<(f64, f64)>,
+    /// Whole-line fade opacity multiplier (`0` visible … `255` invisible).
+    pub fade_alpha: FadeAlpha,
+    /// The animated visible runs in source order.
+    pub spans: Vec<EvaluatedSpan>,
+    /// The line layout the evaluation was taken against (alignment, clip,
+    /// origin, wrap), surfaced so a renderer needn't re-resolve.
+    pub layout: LineLayout,
+}
+
+/// Evaluate a whole Dialogue line at time `t` (milliseconds relative to
+/// the line start), given its total on-screen `duration_ms`.
+///
+/// `line` is the static [`ResolvedLine`] from [`crate::ass_resolve`] and
+/// `tokens` its source token stream (needed for the `\t(...)` transform
+/// scope and the `\k`-family karaoke timeline). The two must come from
+/// the same Dialogue `Text`. Each span is animated by the `\t(...)` tags
+/// that were *in scope* when it began — a `\t` only affects the text that
+/// follows it, so a `{\t(...)}` at line start animates every span while a
+/// mid-line `{\t(...)}` animates only the spans after it.
+///
+/// Position and fade are whole-line properties evaluated once via
+/// [`position_at`] / [`fade_alpha_at`]; karaoke fill is taken from the
+/// per-syllable [`karaoke_fills`] timeline, matched to spans by source
+/// order.
+pub fn evaluate_line_at(
+    line: &ResolvedLine,
+    tokens: &[AssToken],
+    t: i64,
+    duration_ms: i64,
+) -> EvaluatedLine {
+    // Walk the tokens to learn, for each visible run, the set of \t tags
+    // in scope at the point the run began. ass_resolve emits one span per
+    // maximal constant-style run; we mirror its run boundaries by
+    // flushing whenever an override block intervenes between text.
+    let mut active: Vec<&AssTag> = Vec::new();
+    // Per-run scoped-transform snapshots in source order.
+    let mut run_scopes: Vec<Vec<&AssTag>> = Vec::new();
+    let mut in_run = false;
+
+    for tok in tokens {
+        match tok {
+            AssToken::Text(_) | AssToken::SoftBreak | AssToken::HardBreak | AssToken::HardSpace => {
+                if !in_run {
+                    run_scopes.push(active.clone());
+                    in_run = true;
+                }
+            }
+            AssToken::Override(tags) => {
+                // An override block closes the current run (matching the
+                // resolver's flush) and may add \t tags to the scope.
+                in_run = false;
+                for tag in tags {
+                    if matches!(tag, AssTag::Transform { .. }) {
+                        active.push(tag);
+                    }
+                }
+            }
+        }
+    }
+
+    // Karaoke fills are produced per-syllable in source order; the
+    // resolver emits one span per syllable too, so zip by index.
+    let fills = karaoke_fills(tokens, t);
+
+    let mut spans = Vec::with_capacity(line.spans.len());
+    for (i, span) in line.spans.iter().enumerate() {
+        let scope = run_scopes.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        let style = animate_style_at(&span.style, scope, t, duration_ms);
+        // A span carries a karaoke beat iff the resolver tagged it; fall
+        // back to the matching syllable fill, else fully highlighted.
+        let karaoke_fill = if span.karaoke_cs.is_some() {
+            fills.get(i).map(|s| s.fill).unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        spans.push(EvaluatedSpan {
+            text: span.text.clone(),
+            style,
+            karaoke_fill,
+        });
+    }
+
+    EvaluatedLine {
+        position: position_at(&line.layout, t, duration_ms),
+        fade_alpha: fade_alpha_at(&line.layout, t, duration_ms),
+        spans,
+        layout: line.layout.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -870,5 +991,67 @@ mod tests {
         assert_eq!(f[0].start_ms, 0);
         assert_eq!(f[1].start_ms, 200);
         assert_eq!(f[2].start_ms, 500);
+    }
+
+    #[test]
+    fn evaluate_combines_position_fade_and_style() {
+        // Position via \move, fade via \fad, animated scale via \t.
+        let text = "{\\move(0,0,100,100)\\fad(500,0)\\t(0,4000,\\fscx200)}Go";
+        let line = resolved(text);
+        let toks = tokenize(text);
+        let ev = evaluate_line_at(&line, &toks, 2000, 4000);
+        // \move halfway.
+        assert_eq!(ev.position, Some((50.0, 50.0)));
+        // \fad(500,0): fully visible by t=500, so alpha 0 at t=2000.
+        assert_eq!(ev.fade_alpha, 0);
+        // \t scale halfway from 100 to 200.
+        assert_eq!(ev.spans.len(), 1);
+        assert!((ev.spans[0].style.scale_x - 150.0).abs() < 1e-6);
+        assert_eq!(ev.spans[0].text, "Go");
+        assert_eq!(ev.spans[0].karaoke_fill, 1.0);
+    }
+
+    #[test]
+    fn evaluate_transform_scope_is_per_span() {
+        // A mid-line \t only animates the text after it. The first span
+        // ("A") has no \t in scope; the second ("B") does.
+        let text = "A{\\t(0,1000,\\frz90)}B";
+        let line = resolved(text);
+        let toks = tokenize(text);
+        let ev = evaluate_line_at(&line, &toks, 1000, 1000);
+        assert_eq!(ev.spans.len(), 2);
+        assert_eq!(ev.spans[0].text, "A");
+        assert_eq!(ev.spans[0].style.angle_z, 0.0, "A not animated");
+        assert_eq!(ev.spans[1].text, "B");
+        assert!(
+            (ev.spans[1].style.angle_z - 90.0).abs() < 1e-6,
+            "B animated"
+        );
+    }
+
+    #[test]
+    fn evaluate_karaoke_fill_per_span() {
+        // Two karaoke syllables; at t=600ms the first is fully filled and
+        // the second is mid-sweep.
+        let text = "{\\kf50}Ka{\\kf50}ra";
+        let line = resolved(text);
+        let toks = tokenize(text);
+        let ev = evaluate_line_at(&line, &toks, 600, 2000);
+        assert_eq!(ev.spans.len(), 2);
+        assert_eq!(ev.spans[0].karaoke_fill, 1.0); // [0,500] done
+                                                   // second sweeps [500,1000]: at 600 -> 0.2.
+        assert!((ev.spans[1].karaoke_fill - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn evaluate_plain_line_is_static() {
+        let line = resolved("just text");
+        let toks = tokenize("just text");
+        let ev = evaluate_line_at(&line, &toks, 1234, 5000);
+        assert_eq!(ev.position, None);
+        assert_eq!(ev.fade_alpha, 0);
+        assert_eq!(ev.spans.len(), 1);
+        assert_eq!(&ev.spans[0].style, &line.spans[0].style);
+        assert_eq!(ev.spans[0].karaoke_fill, 1.0);
     }
 }

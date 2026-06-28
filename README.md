@@ -416,6 +416,23 @@ let karaoke = karaoke_fills(&toks, t);                 // \k / \K / \kf / \ko
 All four are derived from the Aegisub override-tag reference
 (`docs/subtitles/ass/aegisub-ass-tags.html`).
 
+`evaluate_line_at` ties them together for the common per-frame renderer
+call: given the resolved line, its token stream, `t`, and the duration it
+returns an `EvaluatedLine` carrying the effective `position`, `fade_alpha`,
+and per-run `EvaluatedSpan`s (each with its animated `style` and
+`karaoke_fill`). The `\t(...)` transforms are scoped *per span* — a
+mid-line `{\t(...)}` animates only the runs that follow it — by
+re-walking the tokens to learn each run's in-scope transform set.
+
+```rust
+use oxideav_subtitle::evaluate_line_at;
+let ev = evaluate_line_at(&line, &toks, t, dur);
+for span in &ev.spans {
+    // draw span.text at ev.position in span.style, with span.karaoke_fill
+    // and ev.fade_alpha applied.
+}
+```
+
 ## WebVTT signature and timestamp strictness
 
 The WebVTT parser enforces the §4.1 file-signature production and the
