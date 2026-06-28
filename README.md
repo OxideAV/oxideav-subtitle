@@ -259,6 +259,14 @@ let visible = plain_text(&toks, Some(WrapStyle::SmartEven));
   (no documented value) keeps the whole tag verbatim `AssTag::Other`.
   `drawing_scale_divisor` maps a level to its coordinate divisor
   (`\p2` → 2, `\p4` → 8).
+* The style-reset tag is typed: `\r` / `\r<style>` parse to
+  `AssTag::Reset(Option<String>)` ("Reset the style. This cancels all
+  style overrides in effect, including animations, for all following
+  text"). Bare `\r` (`None`) resets to the line's own style; `\r<style>`
+  (`Some(name)`) "reset[s] the style to that specific style" — the name
+  rides through verbatim (style names carry spaces, e.g.
+  `\rAlternate Title`). The exact-prefix match keeps the `\fr*` rotation
+  family distinct from `\r`.
 * Every other tag is preserved verbatim as `AssTag::Other`, and non-tag
   text inside a block becomes `AssTag::Comment`, so
   `emit(&tokenize(s)) == s` byte-for-byte on every input (unterminated
@@ -325,7 +333,11 @@ round-trips:
   `\org`, `\fad`/`\fade`, `\clip`/`\iclip`, `\an`/`\a`). Each tag's
   parameterless form resets that field to the base; `\k` karaoke beats
   ride each span's `karaoke_cs`; `\t(...)` is left for separate
-  animation.
+  animation. The `\r` / `\r<style>` reset cancels all running overrides
+  for following text — bare `\r` resets to the line base, and
+  `resolve_tokens_with_styles` honours `\r<style>` against a caller-
+  supplied style lookup, swapping the *active* base so subsequent
+  reset-to-style tags resolve against the named style.
 
 * **`ass_event`** parses an `[Events]` `Dialogue:` / `Comment:` row into
   a typed `AssEvent` (by Format header name, the final field absorbing
@@ -344,6 +356,58 @@ round-trips:
   `write` serializes a `SubtitleTrack` back to a `.ass` V4+ stream.
   `parse(write(track))` is a semantic round-trip over metadata, styles,
   and cue timing + plain text.
+
+## ASS / SSA time-varying tag evaluation
+
+`ass_resolve` produces a *static* `ResolvedLine` and deliberately leaves
+the time-varying tags unfolded. The `ass_anim` module is the evaluator: a
+renderer calls it once per output frame with a time `t` (milliseconds
+relative to the line start) and the line's on-screen duration.
+
+```rust
+use oxideav_subtitle::{fade_alpha_at, position_at, animate_style_at,
+                       collect_transforms, karaoke_fills};
+use oxideav_subtitle::ass_resolve::{resolve_line, StyleBase};
+use oxideav_subtitle::ass_tags::tokenize;
+
+let text = "{\\move(100,150,300,350)\\fad(500,500)\\t(0,5000,\\frz360)}Spin";
+let line = resolve_line(text, &StyleBase::default());
+let toks = tokenize(text);
+let (t, dur) = (2500, 5000);
+
+let xy   = position_at(&line.layout, t, dur);          // \move / \pos
+let alpha = fade_alpha_at(&line.layout, t, dur);       // \fad / \fade
+let xforms = collect_transforms(&toks);
+let style = animate_style_at(&line.spans[0].style, &xforms, t, dur); // \t
+let karaoke = karaoke_fills(&toks, t);                 // \k / \K / \kf / \ko
+```
+
+* **`position_at`** — `\move(x1,y1,x2,y2[,t1,t2])` constant-speed
+  interpolation (stationary before `t1` / after `t2`; both-zero or
+  absent times span the whole line), falling back to the static `\pos`,
+  or `None` when neither tag is present.
+* **`fade_alpha_at`** — `\fad(<fadein>,<fadeout>)` ramps the line's
+  opacity `255 → 0` over the first `fadein` ms, holds visible, and
+  `0 → 255` over the last `fadeout` ms measured against the duration;
+  `\fade(a1,a2,a3,t1,t2,t3,t4)` follows the five-part alpha schedule.
+  The result is the ASS-convention multiplier (`0` visible … `255`
+  invisible).
+* **`animate_style_at`** — folds the `\t([t1,t2,][accel,]<modifiers>)`
+  modifiers over the pre-`\t` span style with the acceleration-curve
+  factor `((t-t1)/(t2-t1)).clamp(0,1)^accel` (`accel` 1 linear, `(0,1)`
+  fast-then-slow, `>1` slow-then-fast; window defaults to the whole
+  line). It interpolates the animatable `ResolvedStyle` fields (font
+  size, x/y scale, spacing, x/y/z rotation, x/y border, x/y shadow,
+  edge/gaussian blur, and the four colours + alpha) toward the
+  `\t`-modified state; stacked `\t(...)` blocks compose.
+* **`karaoke_fills`** — walks the token stream into `KaraokeSyllable`s,
+  each carrying its text, highlight kind, cumulative start (running sum
+  of earlier beat durations, centiseconds → ms), own duration, and fill
+  fraction at `t`. Instant `\k` / `\ko` step `0 → 1` at the syllable
+  start; sweeping `\K` / `\kf` ramp linearly across the syllable window.
+
+All four are derived from the Aegisub override-tag reference
+(`docs/subtitles/ass/aegisub-ass-tags.html`).
 
 ## WebVTT signature and timestamp strictness
 

@@ -314,3 +314,53 @@ fn comment_and_unknown_tags_ignored() {
     assert!(r.spans[0].style.bold);
     assert_eq!(r.spans[0].text, "bold");
 }
+
+#[test]
+fn reset_bare_cancels_overrides() {
+    // \b1 turns bold on; \r resets the running style back to the base, so
+    // the text after \r is not bold.
+    use oxideav_subtitle::ass_resolve::resolve_line;
+    let r = resolve_line("{\\b1}bold{\\r}plain", &base());
+    assert!(r.spans[0].style.bold, "first span bold");
+    assert!(!r.spans[1].style.bold, "post-reset span not bold");
+}
+
+#[test]
+fn reset_named_swaps_active_base() {
+    // \rBig switches the active base to one whose font size is 72; a later
+    // parameterless \fs (reset-to-style) then resolves against the swapped
+    // base rather than the line base.
+    use oxideav_subtitle::ass_resolve::{resolve_tokens_with_styles, StyleBase};
+    use oxideav_subtitle::ass_tags::tokenize;
+
+    let line_base = StyleBase {
+        font_size: 18.0,
+        ..StyleBase::default()
+    };
+    let toks = tokenize("{\\fs40}A{\\rBig}B{\\fs}C");
+    let r = resolve_tokens_with_styles(&toks, &line_base, |name| {
+        (name == "Big").then(|| StyleBase {
+            font_size: 72.0,
+            ..StyleBase::default()
+        })
+    });
+    // "A" under the explicit \fs40.
+    assert_eq!(r.spans[0].text, "A");
+    assert_eq!(r.spans[0].style.font_size, 40.0);
+    // "B" after \rBig — reset to the swapped base (72).
+    assert_eq!(r.spans[1].text, "B");
+    assert_eq!(r.spans[1].style.font_size, 72.0);
+    // "C" after a parameterless \fs — reset-to-style against the *swapped*
+    // base, so 72 not the line's 18.
+    assert_eq!(r.spans[2].text, "C");
+    assert_eq!(r.spans[2].style.font_size, 72.0);
+}
+
+#[test]
+fn reset_named_unknown_falls_back_to_line_base() {
+    // An unknown \r<style> name resets to the line base, not an error.
+    use oxideav_subtitle::ass_resolve::resolve_line;
+    let r = resolve_line("{\\b1}x{\\rNope}y", &base());
+    assert!(r.spans[0].style.bold);
+    assert!(!r.spans[1].style.bold);
+}

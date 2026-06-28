@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `\r` / `\r<style>` style-reset tag typing (`AssTag::Reset(Option<String>)`)
+  + resolution. The tokenizer types bare `\r` (`None`, reset to the line
+  style) and `\r<style>` (`Some(name)`, verbatim named-style argument),
+  round-tripping byte-stable; the `\fr*` rotation family stays distinct.
+  `ass_resolve` resets the running style on `\r`, and the new
+  `resolve_tokens_with_styles` entry point honours `\r<style>` against a
+  caller-supplied style lookup, swapping the active base so following
+  reset-to-style tags resolve against the named style. From the Aegisub
+  reference `\r` description.
+
 - `\k`-family karaoke fill evaluation in `ass_anim` (`karaoke_fills` /
   `KaraokeSyllable`). Walks a Dialogue `Text` token stream into per-beat
   syllables — each carrying its visible text, highlight kind, cumulative

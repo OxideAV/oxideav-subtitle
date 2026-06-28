@@ -705,3 +705,44 @@ fn off_shape_fades_stay_verbatim() {
         );
     }
 }
+
+#[test]
+fn reset_tag_bare_and_named_round_trip() {
+    // Bare \r resets to the line style; \r<style> resets to a named
+    // style (the name may carry spaces, e.g. "Alternate Title").
+    for (text, want) in [
+        ("{\\r}x", AssTag::Reset(None)),
+        ("{\\rAlternate}x", AssTag::Reset(Some("Alternate".into()))),
+        (
+            "{\\rAlternate Title}x",
+            AssTag::Reset(Some("Alternate Title".into())),
+        ),
+    ] {
+        let tokens = tokenize(text);
+        assert_eq!(emit(&tokens), text, "{text} must round-trip byte-stable");
+        assert_eq!(tokens[0], AssToken::Override(vec![want]), "{text} typing");
+    }
+}
+
+#[test]
+fn reset_does_not_swallow_rotation_family() {
+    // \frz must still type as a rotation, not as a \r reset of "fz".
+    let tokens = tokenize("{\\frz30}x");
+    assert_eq!(
+        tokens[0],
+        AssToken::Override(vec![AssTag::Rotation {
+            axis: AssRotationAxis::Z,
+            degrees: Some("30".into()),
+            bare: false,
+        }])
+    );
+    assert_eq!(emit(&tokens), "{\\frz30}x");
+}
+
+#[test]
+fn reset_example_from_reference_round_trips() {
+    // The reference \r worked example.
+    let text = "-Hey\\N{\\rAlternate}-Huh?\\N{\\r}-Who are you?";
+    let tokens = tokenize(text);
+    assert_eq!(emit(&tokens), text);
+}

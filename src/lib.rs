@@ -96,8 +96,8 @@ pub use ass_event::{
     event_to_string, fmt_time, parse_event, parse_time, AssEvent, CentiSec, DEFAULT_EVENT_FORMAT,
 };
 pub use ass_resolve::{
-    resolve_line, resolve_tokens, ClipRegion, LineLayout, Move, ResolvedLine, ResolvedSpan,
-    ResolvedStyle, Rgba, StyleBase,
+    resolve_line, resolve_tokens, resolve_tokens_with_styles, ClipRegion, LineLayout, Move,
+    ResolvedLine, ResolvedSpan, ResolvedStyle, Rgba, StyleBase,
 };
 pub use ass_script::{parse as parse_ass, segments_to_ass_text, write as write_ass};
 pub use ass_script_info::{script_info, script_info_keys, AssScriptInfo, Collisions, WrapStyle};

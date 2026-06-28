@@ -362,8 +362,36 @@ pub fn resolve_line(text: &str, base: &StyleBase) -> ResolvedLine {
 
 /// Resolve an already-tokenized Dialogue `Text` field. The token-level
 /// entry point behind [`resolve_line`].
+///
+/// A `\r<style>` resets to `base` (the line style), since this entry point
+/// has no style table. Use [`resolve_tokens_with_styles`] to honour the
+/// named-style reset against a style lookup.
 pub fn resolve_tokens(tokens: &[AssToken], base: &StyleBase) -> ResolvedLine {
-    let mut cur = ResolvedStyle::from_base(base);
+    resolve_tokens_with_styles(tokens, base, |_| None)
+}
+
+/// Resolve an already-tokenized Dialogue `Text` field, honouring the
+/// named-style `\r<style>` reset against a style lookup.
+///
+/// `lookup` maps a style name (the verbatim argument of a `\r<style>`) to
+/// its [`StyleBase`]; returning `None` falls back to the line `base`. A
+/// `\r<style>` switches the *active* base for all following text, so
+/// subsequent parameterless reset tags (`{\b0}` → off, but `{\i}` →
+/// reset-to-style) resolve against the swapped style, matching "Reset the
+/// style … for all following text" and "reset the style to that specific
+/// style".
+pub fn resolve_tokens_with_styles<F>(
+    tokens: &[AssToken],
+    base: &StyleBase,
+    lookup: F,
+) -> ResolvedLine
+where
+    F: Fn(&str) -> Option<StyleBase>,
+{
+    // The currently-active base — swapped by `\r<style>`. Owned so a
+    // named-style reset can install a fresh base.
+    let mut active_base: StyleBase = base.clone();
+    let mut cur = ResolvedStyle::from_base(&active_base);
     let mut layout = LineLayout::default();
     let mut spans: Vec<ResolvedSpan> = Vec::new();
     let mut pending = String::new();
@@ -422,7 +450,15 @@ pub fn resolve_tokens(tokens: &[AssToken], base: &StyleBase) -> ResolvedLine {
                 // the current run.
                 flush!();
                 for tag in tags {
-                    apply_tag(tag, base, &mut cur, &mut layout, &mut pending_k);
+                    // A named-style `\r<style>` swaps the active base
+                    // before resetting; bare `\r` (and an unknown name)
+                    // resets to the current active base.
+                    if let AssTag::Reset(Some(name)) = tag {
+                        if let Some(swapped) = lookup(name) {
+                            active_base = swapped;
+                        }
+                    }
+                    apply_tag(tag, &active_base, &mut cur, &mut layout, &mut pending_k);
                 }
             }
         }
@@ -607,6 +643,15 @@ fn apply_tag(
                     commands: commands.clone(),
                 },
             });
+        }
+        // `\r` / `\r<style>` "cancels all style overrides in effect …
+        // for all following text", resetting to the line style (bare `\r`)
+        // or a named style. The single-`StyleBase` resolver has no style
+        // table, so it resets the running state to the base; the
+        // named-style switch is handled by the style-aware
+        // [`resolve_tokens_with_styles`] entry point.
+        AssTag::Reset(_) => {
+            *cur = ResolvedStyle::from_base(base);
         }
         // `\t(...)` describes a time-varying end state; a single static
         // resolved style can't represent it, so we leave the running

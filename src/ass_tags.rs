@@ -587,6 +587,18 @@ pub enum AssTag {
     /// form carries no documented value and stays verbatim untyped
     /// ([`AssTag::Other`]) so [`emit`] is byte-stable.
     BaselineOffset(i32),
+    /// `\r` / `\r<style>` — style reset. Per the Aegisub reference,
+    /// "Reset the style. This cancels all style overrides in effect,
+    /// including animations, for all following text." "The first form
+    /// that does not specify a style will reset to the style defined for
+    /// the entire line, while the second form, that specifies the name of
+    /// a style, will reset the style to that specific style."
+    ///
+    /// `None` is the bare `\r` (reset to the line's own style); `Some(s)`
+    /// carries the verbatim named-style argument (which may contain
+    /// spaces, e.g. `\rAlternate`). The name rides through verbatim so
+    /// [`emit`] stays byte-stable.
+    Reset(Option<String>),
     /// Any other tag, kept verbatim — the full body after the
     /// backslash, including parenthesised parameter lists (a `\fad` /
     /// `\fade` whose arguments fall outside the typed shape, a `\t(...)`
@@ -738,6 +750,9 @@ fn classify(tag: &str) -> AssTag {
         return typed;
     }
     if let Some(typed) = classify_drawing(tag) {
+        return typed;
+    }
+    if let Some(typed) = classify_reset(tag) {
         return typed;
     }
     let (head, arg) = match tag.chars().next() {
@@ -1269,6 +1284,24 @@ fn classify_drawing(tag: &str) -> Option<AssTag> {
         return Some(AssTag::Drawing(canon_u32(rest)?));
     }
     None
+}
+
+/// Try the `\r` style-reset tag: bare `\r` (reset to the line's style) or
+/// `\r<style>` (reset to a named style). The named-style argument is an
+/// arbitrary verbatim string — style names carry spaces and arbitrary
+/// characters — so the whole tail after `r` rides through unparsed and
+/// [`emit`] stays byte-stable.
+///
+/// The `\fr*` rotation family was already consumed by [`classify_font`]
+/// above, so a `\frz` never reaches here; only a leading `r` not followed
+/// by the rotation spelling lands in this arm.
+fn classify_reset(tag: &str) -> Option<AssTag> {
+    let rest = tag.strip_prefix('r')?;
+    if rest.is_empty() {
+        Some(AssTag::Reset(None))
+    } else {
+        Some(AssTag::Reset(Some(rest.to_string())))
+    }
 }
 
 /// A canonical non-negative decimal run, returned verbatim. Rejects a
@@ -1858,6 +1891,12 @@ fn emit_tag(out: &mut String, tag: &AssTag) {
         AssTag::BaselineOffset(y) => {
             out.push_str("\\pbo");
             out.push_str(&y.to_string());
+        }
+        AssTag::Reset(style) => {
+            out.push_str("\\r");
+            if let Some(s) = style {
+                out.push_str(s);
+            }
         }
         AssTag::Other(body) => {
             out.push('\\');
