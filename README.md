@@ -1,5 +1,7 @@
 # oxideav-subtitle
 
+[![CI](https://github.com/OxideAV/oxideav-subtitle/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-subtitle/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-subtitle.svg)](https://crates.io/crates/oxideav-subtitle) [![docs.rs](https://docs.rs/oxideav-subtitle/badge.svg)](https://docs.rs/oxideav-subtitle) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Subtitle codecs + containers for oxideav — SRT, WebVTT, MicroDVD, MPL2,
 MPsub, VPlayer, PJS, AQTitle, JACOsub, RealText, SubViewer 1/2, TTML,
 SAMI, EBU STL — plus a text-to-RGBA compositor and a
