@@ -754,3 +754,61 @@ xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
         t2.metadata
     );
 }
+
+#[test]
+fn resolve_referenced_style_merges_head_styles() {
+    // TTML2 §8.4: a cue's style="s1 s2" resolves against the head table,
+    // later ids overriding earlier ones.
+    let src = "<tt xmlns=\"http://www.w3.org/ns/ttml\" \
+xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <head><styling>\n\
+    <style xml:id=\"s1\" tts:color=\"#FF0000FF\" tts:fontWeight=\"bold\"/>\n\
+    <style xml:id=\"s2\" tts:color=\"#00FF00FF\" tts:fontStyle=\"italic\"/>\n\
+  </styling></head>\n\
+  <body><div><p begin=\"0s\" end=\"1s\" style=\"s1 s2\">hi</p></div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    let cue = &t.cues[0];
+    let eff = ttml::cue_effective_style(&t, cue).expect("must resolve");
+    // s2 (later) wins the colour; s1's bold + s2's italic both survive.
+    assert_eq!(eff.primary_color, Some((0x00, 0xFF, 0x00, 0xFF)));
+    assert!(eff.bold, "bold from s1 lost");
+    assert!(eff.italic, "italic from s2 lost");
+}
+
+#[test]
+fn resolve_referenced_style_walks_nested_chain() {
+    // A referenced style that itself references a base: base is applied
+    // first (least specific), the derived style overrides.
+    let src = "<tt xmlns=\"http://www.w3.org/ns/ttml\" \
+xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <head><styling>\n\
+    <style xml:id=\"base\" tts:color=\"#FF0000FF\" tts:fontFamily=\"Serif\"/>\n\
+    <style xml:id=\"derived\" style=\"base\" tts:color=\"#0000FFFF\"/>\n\
+  </styling></head>\n\
+  <body><div><p begin=\"0s\" end=\"1s\" style=\"derived\">hi</p></div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    let eff = ttml::cue_effective_style(&t, &t.cues[0]).expect("resolve");
+    // derived overrides base's colour, inherits base's font family.
+    assert_eq!(eff.primary_color, Some((0x00, 0x00, 0xFF, 0xFF)));
+    assert_eq!(eff.font_family.as_deref(), Some("Serif"));
+}
+
+#[test]
+fn resolve_referenced_style_none_for_unknown_and_cycle_safe() {
+    // Unknown ids resolve to None; a self-referential chain must not loop.
+    let src = "<tt xmlns=\"http://www.w3.org/ns/ttml\" \
+xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <head><styling>\n\
+    <style xml:id=\"loop\" style=\"loop\" tts:fontWeight=\"bold\"/>\n\
+  </styling></head>\n\
+  <body><div><p begin=\"0s\" end=\"1s\">hi</p></div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    assert!(ttml::resolve_referenced_style(&t, "does_not_exist").is_none());
+    assert!(ttml::resolve_referenced_style(&t, "   ").is_none());
+    // Cycle must terminate and still apply the style's own value once.
+    let eff = ttml::resolve_referenced_style(&t, "loop").expect("resolve");
+    assert!(eff.bold);
+}

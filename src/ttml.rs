@@ -947,6 +947,129 @@ fn build_style(e: &Element) -> Option<SubtitleStyle> {
     Some(s)
 }
 
+/// Resolve a TTML **referential style** reference (the `style="id1 id2 …"`
+/// attribute value found on a `<p>` / `<span>` / `<region>` or the cue's
+/// [`SubtitleCue::style_ref`]) into a single effective [`SubtitleStyle`].
+///
+/// Per TTML2 §8.4 *Referential Styling*, a style reference is a
+/// whitespace-separated list of style ids resolved against the document's
+/// head `<styling>` table. This walks that table (surfaced in
+/// [`SubtitleTrack::styles`], keyed by `xml:id`) and merges each referenced
+/// style's specified values into an accumulator so that:
+///
+/// * later ids in the list override earlier ones (§8.4.3.2: a style
+///   occurring later in the list is more specific), and
+/// * a referenced style's own *nested* chain (its `style` attribute,
+///   preserved as `ttml_style_ref.<id>` track metadata by [`parse`]) is
+///   applied **before** the style's own attributes, so the style itself
+///   overrides what it inherits.
+///
+/// Because the IR [`SubtitleStyle`] records only *set* values (an unset
+/// boolean is indistinguishable from an explicit `normal`/`none`), merging
+/// overlays each `Some` option, each `true` flag, and any non-default
+/// [`TextAlign`]; it never clears a value a more-specific style already set.
+///
+/// Returns `None` when the reference is empty or resolves to no known style.
+/// A reference cycle among nested chains is broken safely (each id is
+/// applied at most once per resolution).
+pub fn resolve_referenced_style(track: &SubtitleTrack, style_ref: &str) -> Option<SubtitleStyle> {
+    let ids: Vec<&str> = style_ref.split_whitespace().collect();
+    if ids.is_empty() {
+        return None;
+    }
+    let mut acc = SubtitleStyle::new(style_ref.trim());
+    let mut any = false;
+    let mut visited: Vec<String> = Vec::new();
+    for id in ids {
+        any |= apply_style_ref(track, id, &mut acc, &mut visited);
+    }
+    if any {
+        Some(acc)
+    } else {
+        None
+    }
+}
+
+/// Convenience wrapper: resolve the effective referential style for a cue
+/// from its [`SubtitleCue::style_ref`] against `track`'s head style table.
+/// Returns `None` when the cue has no `style` reference or none resolves.
+pub fn cue_effective_style(track: &SubtitleTrack, cue: &SubtitleCue) -> Option<SubtitleStyle> {
+    let sref = cue.style_ref.as_deref()?;
+    resolve_referenced_style(track, sref)
+}
+
+/// Apply one referenced style id (and its nested chain, depth-first) onto
+/// `acc`. Returns whether the id (or its chain) resolved to a known style.
+fn apply_style_ref(
+    track: &SubtitleTrack,
+    id: &str,
+    acc: &mut SubtitleStyle,
+    visited: &mut Vec<String>,
+) -> bool {
+    if id.is_empty() || visited.iter().any(|v| v == id) {
+        return false;
+    }
+    visited.push(id.to_string());
+    let mut resolved = false;
+    // Nested chain first (least specific): the `style` attr this style
+    // itself carried, preserved as `ttml_style_ref.<id>` metadata.
+    if let Some((_, chain)) = track
+        .metadata
+        .iter()
+        .find(|(k, _)| k.strip_prefix("ttml_style_ref.") == Some(id))
+    {
+        for parent in chain.split_whitespace() {
+            resolved |= apply_style_ref(track, parent, acc, visited);
+        }
+    }
+    // Then the style's own specified values (more specific — overrides).
+    if let Some(s) = track.style(id) {
+        overlay_style(acc, s);
+        resolved = true;
+    }
+    resolved
+}
+
+/// Overlay `src`'s *set* values onto `dst` (referential-styling merge).
+fn overlay_style(dst: &mut SubtitleStyle, src: &SubtitleStyle) {
+    if src.font_family.is_some() {
+        dst.font_family = src.font_family.clone();
+    }
+    if src.font_size.is_some() {
+        dst.font_size = src.font_size;
+    }
+    if src.primary_color.is_some() {
+        dst.primary_color = src.primary_color;
+    }
+    if src.outline_color.is_some() {
+        dst.outline_color = src.outline_color;
+    }
+    if src.back_color.is_some() {
+        dst.back_color = src.back_color;
+    }
+    if src.outline.is_some() {
+        dst.outline = src.outline;
+    }
+    if src.shadow.is_some() {
+        dst.shadow = src.shadow;
+    }
+    if src.bold {
+        dst.bold = true;
+    }
+    if src.italic {
+        dst.italic = true;
+    }
+    if src.underline {
+        dst.underline = true;
+    }
+    if src.strike {
+        dst.strike = true;
+    }
+    if !matches!(src.align, oxideav_core::TextAlign::Start) {
+        dst.align = src.align;
+    }
+}
+
 fn parse_text_align(v: &str) -> Option<oxideav_core::TextAlign> {
     use oxideav_core::TextAlign;
     match v.trim().to_ascii_lowercase().as_str() {
