@@ -226,3 +226,14 @@ fn write_produces_parseable_sections() {
     assert!(text.contains("Format: "));
     assert!(text.contains("Dialogue: "));
 }
+
+#[test]
+fn script_info_line_starting_with_multibyte_char_does_not_panic() {
+    // Regression: a `[Script Info]` line whose first bytes are a multi-byte
+    // UTF-8 character used to panic in `keyword`'s `line[..kw.len()]` slice
+    // when `kw.len()` fell inside the character. Parsing must be infallible
+    // here (ass_script::parse returns a SubtitleTrack directly).
+    let src = "[Script Info]\né a non-ascii lead line\nTitle: Ok\n\n[Events]\n";
+    let t = parse(src.as_bytes());
+    assert_eq!(t.source, Some(SourceFormat::AssOrSsa));
+}

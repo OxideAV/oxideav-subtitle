@@ -59,3 +59,17 @@ fn probe_zero_on_random_text() {
 fn frame_to_us(frame: i64, fps: f64) -> i64 {
     ((frame as f64 / fps) * 1_000_000.0).round() as i64
 }
+
+#[test]
+fn color_tag_with_multibyte_char_does_not_panic() {
+    // Regression: a 6-byte colour run containing a multi-byte UTF-8
+    // character (`aébcd`) used to panic slicing on a non-char boundary in
+    // `parse_bgr`. Must degrade to an untyped/plain result, never panic.
+    let src = "{1}{2}{c:$aébcd}hi\n";
+    let t = microdvd::parse(src.as_bytes()).expect("must not panic or error");
+    assert_eq!(t.cues.len(), 1);
+    // The malformed colour tag is not a valid BGR triple, so no Color segment
+    // is produced; the visible text survives.
+    let text = oxideav_subtitle::ir::plain_text(&t.cues[0].segments);
+    assert!(text.contains("hi"), "text lost: {text:?}");
+}

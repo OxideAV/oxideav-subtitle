@@ -347,7 +347,12 @@ fn split_kv(line: &str) -> Option<(&str, &str)> {
 /// Return the body after a leading `Keyword:` token (case-insensitive),
 /// or `None` if the keyword is absent.
 fn keyword<'a>(line: &'a str, kw: &str) -> Option<&'a str> {
-    if line.len() >= kw.len() && line[..kw.len()].eq_ignore_ascii_case(kw) {
+    // Compare on raw bytes: `line[..kw.len()]` would panic when `kw.len()`
+    // lands inside a multi-byte UTF-8 sequence (e.g. a line beginning with a
+    // non-ASCII character). Byte comparison is boundary-safe, and a match
+    // guarantees the first `kw.len()` bytes are ASCII so the later
+    // `line[kw.len()..]` slice is a valid char boundary.
+    if line.len() >= kw.len() && line.as_bytes()[..kw.len()].eq_ignore_ascii_case(kw.as_bytes()) {
         let rest = line[kw.len()..].trim_start();
         return rest.strip_prefix(':').map(|r| r.trim_start());
     }

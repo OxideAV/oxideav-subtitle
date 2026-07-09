@@ -332,7 +332,9 @@ fn classify_tag(tag: &str, rest: &str) -> Option<Segment> {
 
 fn parse_bgr(s: &str) -> Option<(u8, u8, u8)> {
     let hex = s.trim().trim_start_matches('$').trim_start_matches('#');
-    if hex.len() != 6 {
+    // Guard on ASCII before byte-slicing: a 6-byte run that contains a
+    // multi-byte UTF-8 character (e.g. `aébcd`) would panic in `hex[0..2]`.
+    if hex.len() != 6 || !hex.is_ascii() {
         return None;
     }
     let b = u8::from_str_radix(&hex[0..2], 16).ok()?;
