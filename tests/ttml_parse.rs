@@ -718,3 +718,39 @@ fn inline_p_background_color_round_trips_via_extras() {
         "{extras2}"
     );
 }
+
+#[test]
+fn head_style_referential_chain_round_trips() {
+    // TTML2 §8.4.1.1: a <style> may reference other styles via its own
+    // `style` attribute. That referential chain has no SubtitleStyle field;
+    // it must survive parse -> write -> parse via ttml_style_ref.<id>.
+    let src = "<tt xmlns=\"http://www.w3.org/ns/ttml\" \
+xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <head><styling>\n\
+    <style xml:id=\"base\" tts:color=\"#FF0000FF\"/>\n\
+    <style xml:id=\"derived\" style=\"base\" tts:fontWeight=\"bold\"/>\n\
+  </styling></head>\n\
+  <body><div><p begin=\"0s\" end=\"1s\" style=\"derived\">hi</p></div></body>\n\
+</tt>";
+    let t1 = ttml::parse(src.as_bytes()).unwrap();
+    assert!(
+        t1.metadata
+            .iter()
+            .any(|(k, v)| k == "ttml_style_ref.derived" && v == "base"),
+        "chain not captured: {:?}",
+        t1.metadata
+    );
+    let out = String::from_utf8(ttml::write(&t1)).unwrap();
+    assert!(
+        out.contains("style=\"base\""),
+        "chain not re-emitted:\n{out}"
+    );
+    let t2 = ttml::parse(out.as_bytes()).unwrap();
+    assert!(
+        t2.metadata
+            .iter()
+            .any(|(k, v)| k == "ttml_style_ref.derived" && v == "base"),
+        "chain lost on round-trip: {:?}",
+        t2.metadata
+    );
+}

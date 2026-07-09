@@ -141,6 +141,23 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
                                     .metadata
                                     .push((format!("ttml_style_extra.{}", id), extras));
                             }
+                            // TTML2 §8.4.1.1: a `<style>` may itself carry a
+                            // `style` attribute referencing one or more other
+                            // styles it inherits from ("nested" / chained
+                            // referential styling). The IR `SubtitleStyle` has
+                            // no field for it, so preserve the raw id list as
+                            // `ttml_style_ref.<id>` so the writer can re-emit
+                            // the chain and `resolve_referenced_style` can walk
+                            // it.
+                            if let Some(chain) = attr(e, "style") {
+                                let chain = chain.trim();
+                                if !chain.is_empty() {
+                                    track.metadata.push((
+                                        format!("ttml_style_ref.{}", id),
+                                        chain.to_string(),
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -271,6 +288,14 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
             out.push_str("    <styling>\n");
             for s in &track.styles {
                 out.push_str(&format!("      <style xml:id=\"{}\"", escape_attr(&s.name)));
+                // Re-emit a preserved referential `style=` chain (§8.4.1.1).
+                if let Some((_, chain)) = track
+                    .metadata
+                    .iter()
+                    .find(|(k, _)| k.strip_prefix("ttml_style_ref.") == Some(s.name.as_str()))
+                {
+                    out.push_str(&format!(" style=\"{}\"", escape_attr(chain)));
+                }
                 if let Some((r, g, b, a)) = s.primary_color {
                     out.push_str(&format!(
                         " tts:color=\"#{:02X}{:02X}{:02X}{:02X}\"",
