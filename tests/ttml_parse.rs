@@ -812,3 +812,32 @@ xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
     let eff = ttml::resolve_referenced_style(&t, "loop").expect("resolve");
     assert!(eff.bold);
 }
+
+#[test]
+fn named_colors_cover_ttml2_vocabulary() {
+    // TTML2 §10.3.5 <namedColor>: the five that were previously unmapped
+    // (maroon/purple/olive/navy/teal) plus a couple already-mapped ones.
+    let cases = [
+        ("maroon", (128, 0, 0, 255)),
+        ("purple", (128, 0, 128, 255)),
+        ("olive", (128, 128, 0, 255)),
+        ("navy", (0, 0, 128, 255)),
+        ("teal", (0, 128, 128, 255)),
+        ("silver", (192, 192, 192, 255)),
+        ("transparent", (0, 0, 0, 0)),
+    ];
+    for (name, want) in cases {
+        let src = format!(
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\" \
+xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <head><styling><style xml:id=\"s\" tts:color=\"{name}\"/></styling></head>\n\
+  <body><div><p begin=\"0s\" end=\"1s\" style=\"s\">x</p></div></body></tt>"
+        );
+        let t = ttml::parse(src.as_bytes()).unwrap();
+        assert_eq!(
+            t.styles[0].primary_color,
+            Some(want),
+            "named colour {name} mismatch"
+        );
+    }
+}

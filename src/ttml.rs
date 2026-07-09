@@ -1636,6 +1636,7 @@ fn parse_ttml_color_rgba(s: &str) -> Option<(u8, u8, u8, u8)> {
 
 fn named(s: &str) -> Option<(u8, u8, u8, u8)> {
     match s.to_ascii_lowercase().as_str() {
+        // TTML2 §10.3.5 <namedColor> vocabulary (docs/subtitles/ttml2-w3c.html).
         "black" => Some((0, 0, 0, 255)),
         "white" => Some((255, 255, 255, 255)),
         "red" => Some((255, 0, 0, 255)),
@@ -1647,6 +1648,11 @@ fn named(s: &str) -> Option<(u8, u8, u8, u8)> {
         "magenta" | "fuchsia" => Some((255, 0, 255, 255)),
         "silver" => Some((192, 192, 192, 255)),
         "gray" | "grey" => Some((128, 128, 128, 255)),
+        "maroon" => Some((128, 0, 0, 255)),
+        "purple" => Some((128, 0, 128, 255)),
+        "olive" => Some((128, 128, 0, 255)),
+        "navy" => Some((0, 0, 128, 255)),
+        "teal" => Some((0, 128, 128, 255)),
         "transparent" => Some((0, 0, 0, 0)),
         _ => None,
     }
