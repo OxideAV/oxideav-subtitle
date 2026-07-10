@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/OxideAV/oxideav-subtitle/compare/v0.1.2...v0.1.3) - 2026-07-10
+
+### Other
+
+- ass_tags — satisfy clippy 1.97 question_mark on two if-let chains
+- README — document TTML §8.4 referential-styling resolution API
+- ttml — region-associated styling resolution (TTML2 §8.4.2)
+- ttml — complete TTML2 §10.3.5 named-colour table
+- ttml — public referential-style resolver (TTML2 §8.4)
+- ttml — preserve head-style referential style= chain across round-trip
+- add bounded no-panic hostile-input sweep over all 16 parsers
+- fix two multibyte char-boundary panics in ass_script + microdvd
+- add CI / crates.io / docs.rs / MIT-license badges
+- escape [0;1] in ass_anim doc comment to silence intra-doc-link warning
+- ass_anim — evaluate_line_at combined per-frame line evaluator
+- type \q0-\q3 line-wrapping tag onto LineLayout.wrap
+- type \r/\r<style> style-reset tag + style-aware resolution
+- ass_anim — \k-family karaoke per-syllable fill evaluation
+- ass_anim — \t(...) animated-transform style evaluation
+- ass_anim — \fad/\fade fade-alpha + \move/\pos position time evaluation
+- scrub two decorative renderer-name mentions from doc prose
+- document the ASS/SSA text-side parse->resolve->serialize pipeline
+- whole-document writer + IR-segment -> Dialogue Text emitter
+- whole-document .ass/.ssa parser into a SubtitleTrack
+- parse [Events] Dialogue/Comment lines into a typed AssEvent
+- serialize resolved state back to Dialogue Text + Style row
+- parse [V4+ Styles] / [V4 Styles] Style row into a StyleBase
+- override-tag style resolution — fold tag stream over base style
+- preserve inline <p> tts:backgroundColor through round-trip
+- round-trip the full TTML2 §10.2 styling-attribute vocabulary
+- round-trip xml:space="preserve" through parse -> write
+- §8.2.10 xml:space whitespace handling (default collapse / preserve)
+- document §12.2.4 timeContainer seq/par + timed-span reveal
+- timed inline <span> progressive-reveal markers (TTML2 §12.2.4)
+- implement TTML2 §12.2.4 timeContainer seq/par timing semantics
+- type ASS \p/\pbo drawing-mode toggles + \p drawing-command stream parser
+- type the \t(...) animated-transform override tag
+- type \fad / \fade fade override tags
+- type \clip / \iclip override tags
+- refresh to current status, drop per-round changelog cruft
+- refresh module doc for the now-typed border/shadow + blur families
+- type the \be / \blur edge-blur override family
+- type the \bord / \shad border + shadow override family
+- type the font-metric + rotation override-tag family
+- typed alignment, karaoke, and positioning override tags
+- typed colour / alpha override tags (\c, \1c-\4c, \alpha, \1a-\4a)
+- Appendix A override-tag tokenizer for Dialogue text
+- typed [Script Info] accessor over SubtitleTrack metadata
+- §5 default cue-component class colour resolution helpers
+- drop release-plz.toml — use release-plz defaults across the workspace
+- §6.4 HTML char-ref decode + §4.2.2 text-byte escape
+- §8.1.5 inline tts:* styling attributes on <p> are honoured
+- enforce §6.3 strict percentage validation on position/size/line
+- enforce §4.1 signature + §3.3 timestamp shape strictly
+- §3.4 cue-identifier round-trip via vtt_cue_id.<idx>
+- §4.1 NOTE comment-block round-trip via vtt_note.<idx>
+- tolerate leading preamble, dup-index rows, and embedded blank lines
+- drop decorative cross-impl clause from escape_text comment
+
 ### Added
 
 - `\q0`–`\q3` line-wrapping tag typing (`AssTag::WrapMode(WrapStyle)`),
