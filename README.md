@@ -760,6 +760,26 @@ supplies the matching `<tt>` parameter:
 Without the matching parameter on `<tt>`, the frame / tick component is
 silently dropped (legacy behaviour preserved for back-compat).
 
+### TTML2 §8.4 referential styling resolution
+
+A `<p>` / `<span>` / `<region>` `style="id1 id2 …"` reference resolves
+against the head `<styling>` table into one effective `SubtitleStyle`:
+
+* `resolve_referenced_style(track, "id1 id2")` merges the named styles,
+  later ids overriding earlier (§8.4.3.2), and walks each style's own
+  *nested* `style` chain (§8.4.1.1, preserved as `ttml_style_ref.<id>`
+  and re-emitted on round-trip) before its own values. Cycles terminate
+  safely.
+* `region_style(track, id)` resolves a region's associated styling
+  (§8.4.2) — its `style` chain plus inline `tts:*` — from the preserved
+  `ttml_region.<id>` string.
+* `cue_effective_style(track, cue)` resolves the element reference alone;
+  `effective_style_for_cue_index(track, idx)` also folds in the cue's
+  region style beneath it (region least specific, element most).
+
+The five previously-unmapped TTML2 §10.3.5 `<namedColor>` values
+(`maroon` / `purple` / `olive` / `navy` / `teal`) now decode.
+
 ### TTML2 §12.2.4 timeContainer (par / seq) timing
 
 `<body>` / `<div>` / `<p>` form nested time containers. The default
