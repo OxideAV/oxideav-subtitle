@@ -900,17 +900,16 @@ fn classify_position_karaoke(tag: &str) -> Option<AssTag> {
         (AssKaraokeKind::Instant, r)
     } else if let Some(r) = tag.strip_prefix('K') {
         (AssKaraokeKind::SweepCap, r)
-    } else if let Some(rest) = tag.strip_prefix('a') {
+    } else {
         // Legacy \a. \alpha was consumed by the colour / alpha family
         // and \an by the arm above, so `rest` here is the bare or
         // numeric legacy form (or some unrelated a-prefixed tag).
+        let rest = tag.strip_prefix('a')?;
         if rest.is_empty() {
             return Some(AssTag::AlignLegacy(None));
         }
         let v = canon_u8(rest)?;
         return matches!(v, 0..=3 | 5..=7 | 9..=11).then_some(AssTag::AlignLegacy(Some(v)));
-    } else {
-        return None;
     };
     // A karaoke tag with no duration is not a documented reset shape
     // (the duration has no style default to reset to), so the bare
@@ -1108,10 +1107,9 @@ fn classify_blur(tag: &str) -> Option<AssTag> {
 fn classify_clip(tag: &str) -> Option<AssTag> {
     let (inverse, args) = if let Some(a) = paren_args(tag, "iclip") {
         (true, a)
-    } else if let Some(a) = paren_args(tag, "clip") {
-        (false, a)
     } else {
-        return None;
+        let a = paren_args(tag, "clip")?;
+        (false, a)
     };
     // A rectangle is exactly four canonical integers. The drawing-command
     // run never contains a top-level comma, so a four-comma split that
