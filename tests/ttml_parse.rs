@@ -841,3 +841,39 @@ xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
         );
     }
 }
+
+#[test]
+fn region_associated_styling_folds_under_element_style() {
+    // TTML2 §8.4.2: a cue that references a region inherits the region's
+    // associated styling (least specific); the element's own style ref
+    // overrides it.
+    let src = "<tt xmlns=\"http://www.w3.org/ns/ttml\" \
+xmlns:tts=\"http://www.w3.org/ns/ttml#styling\">\n\
+  <head>\n\
+    <styling>\n\
+      <style xml:id=\"emph\" tts:fontWeight=\"bold\"/>\n\
+    </styling>\n\
+    <layout>\n\
+      <region xml:id=\"r1\" tts:color=\"#FF0000FF\" tts:fontFamily=\"Serif\"/>\n\
+    </layout>\n\
+  </head>\n\
+  <body><div>\n\
+    <p begin=\"0s\" end=\"1s\" region=\"r1\" style=\"emph\">a</p>\n\
+    <p begin=\"1s\" end=\"2s\" region=\"r1\">b</p>\n\
+  </div></body>\n\
+</tt>";
+    let t = ttml::parse(src.as_bytes()).unwrap();
+    // Region-only style for the standalone region.
+    let rs = ttml::region_style(&t, "r1").expect("region style");
+    assert_eq!(rs.primary_color, Some((0xFF, 0x00, 0x00, 0xFF)));
+    assert_eq!(rs.font_family.as_deref(), Some("Serif"));
+    // Cue 0: region colour+family (less specific) + element bold (more).
+    let e0 = ttml::effective_style_for_cue_index(&t, 0).expect("cue0 style");
+    assert_eq!(e0.primary_color, Some((0xFF, 0x00, 0x00, 0xFF)));
+    assert_eq!(e0.font_family.as_deref(), Some("Serif"));
+    assert!(e0.bold, "element bold lost");
+    // Cue 1: only region styling (no element style ref).
+    let e1 = ttml::effective_style_for_cue_index(&t, 1).expect("cue1 style");
+    assert_eq!(e1.primary_color, Some((0xFF, 0x00, 0x00, 0xFF)));
+    assert!(!e1.bold);
+}

@@ -113,7 +113,9 @@ pub use ir::{SourceFormat, SubtitleTrack};
 pub use render::make_rendered_decoder_with_face;
 pub use render::{make_rendered_decoder, RenderedSubtitleDecoder};
 pub use transform::{srt_to_webvtt, webvtt_to_srt};
-pub use ttml::{cue_effective_style, resolve_referenced_style};
+pub use ttml::{
+    cue_effective_style, effective_style_for_cue_index, region_style, resolve_referenced_style,
+};
 
 /// Shape a shared capability set for a subtitle codec. Every text
 /// subtitle registered here is `decode=true, encode=true, intra_only=true,

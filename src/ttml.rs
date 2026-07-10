@@ -902,6 +902,15 @@ fn wrap_with_style(el: &Element, mut children: Vec<Segment>) -> Segment {
 fn build_style(e: &Element) -> Option<SubtitleStyle> {
     let id = attr(e, "xml:id").or_else(|| attr(e, "id"))?;
     let mut s = SubtitleStyle::new(id);
+    apply_tts_attrs(e, &mut s);
+    Some(s)
+}
+
+/// Read the IR-modelled `tts:*` styling attributes off an element onto a
+/// [`SubtitleStyle`]. Shared by [`build_style`] (head `<style>`) and the
+/// region-associated styling path so both interpret the vocabulary
+/// identically.
+fn apply_tts_attrs(e: &Element, s: &mut SubtitleStyle) {
     if let Some(c) = attr(e, "tts:color") {
         s.primary_color = parse_ttml_color_rgba(&c);
     }
@@ -944,7 +953,99 @@ fn build_style(e: &Element) -> Option<SubtitleStyle> {
             s.align = ta;
         }
     }
-    Some(s)
+}
+
+/// Resolve a region's *associated* style (TTML2 §8.4.2) from its preserved
+/// `ttml_region.<id>` attribute string: its own `style` reference chain
+/// (least specific) then its inline `tts:*` styling. Region-associated
+/// styling is less specific than element styling, so callers overlay this
+/// **before** any element `style` reference.
+///
+/// Returns `None` when the region is unknown or carries no modelled styling.
+pub fn region_style(track: &SubtitleTrack, region_id: &str) -> Option<SubtitleStyle> {
+    let (_, attrs) = track
+        .metadata
+        .iter()
+        .find(|(k, _)| k.strip_prefix("ttml_region.") == Some(region_id))?;
+    // Re-parse the serialized attribute list as a synthetic element so the
+    // shared attr / styling machinery applies unchanged.
+    let synthetic = format!("<r {attrs}/>");
+    let nodes = parse_xml(&synthetic).ok()?;
+    let el = find_element(&nodes, "r")?;
+    let mut acc = SubtitleStyle::new(region_id);
+    let mut any = false;
+    if let Some(chain) = attr(el, "style") {
+        if let Some(rs) = resolve_referenced_style(track, &chain) {
+            overlay_style(&mut acc, &rs);
+            any = true;
+        }
+    }
+    let mut own = SubtitleStyle::new(region_id);
+    apply_tts_attrs(el, &mut own);
+    if !style_is_unstyled(&own) {
+        overlay_style(&mut acc, &own);
+        any = true;
+    }
+    if any {
+        Some(acc)
+    } else {
+        None
+    }
+}
+
+/// Whether a [`SubtitleStyle`] carries no IR-modelled styling (all values at
+/// their defaults) — used to skip an empty region-associated overlay.
+fn style_is_unstyled(s: &SubtitleStyle) -> bool {
+    s.font_family.is_none()
+        && s.font_size.is_none()
+        && s.primary_color.is_none()
+        && s.outline_color.is_none()
+        && s.back_color.is_none()
+        && s.outline.is_none()
+        && s.shadow.is_none()
+        && !s.bold
+        && !s.italic
+        && !s.underline
+        && !s.strike
+        && matches!(s.align, oxideav_core::TextAlign::Start)
+}
+
+/// Resolve the fully effective [`SubtitleStyle`] for the cue at `cue_index`
+/// in `track`, combining (least → most specific) the cue's referenced
+/// **region** style (§8.4.2) and the cue's own `style` reference (§8.4.1).
+/// This is the region-aware companion to [`cue_effective_style`], which
+/// considers only the element `style` reference. Returns `None` when neither
+/// source resolves to any modelled styling.
+pub fn effective_style_for_cue_index(
+    track: &SubtitleTrack,
+    cue_index: usize,
+) -> Option<SubtitleStyle> {
+    let cue = track.cues.get(cue_index)?;
+    let mut acc = SubtitleStyle::new("");
+    let mut any = false;
+    // Region-associated styling is least specific.
+    if let Some((_, rid)) = track
+        .metadata
+        .iter()
+        .find(|(k, _)| k.strip_prefix("ttml_cue_region.") == Some(&cue_index.to_string()))
+    {
+        if let Some(rs) = region_style(track, rid) {
+            overlay_style(&mut acc, &rs);
+            any = true;
+        }
+    }
+    // Element `style` reference is more specific — overlays the region.
+    if let Some(sref) = cue.style_ref.as_deref() {
+        if let Some(es) = resolve_referenced_style(track, sref) {
+            overlay_style(&mut acc, &es);
+            any = true;
+        }
+    }
+    if any {
+        Some(acc)
+    } else {
+        None
+    }
 }
 
 /// Resolve a TTML **referential style** reference (the `style="id1 id2 …"`
