@@ -26,6 +26,8 @@ back-ends are supported:
 
 ```rust
 use oxideav_subtitle::Compositor;
+# use oxideav_core::{Segment, SubtitleCue};
+# let cue = SubtitleCue { segments: vec![Segment::Text("Hello".into())], ..Default::default() };
 let comp = Compositor::new(640, 480);
 let buf = comp.render(&cue); // Vec<u8>, 640*480*4 bytes
 ```
@@ -42,6 +44,8 @@ only need the `BitmapFont` path.
 ```rust
 use oxideav_subtitle::Compositor;
 use oxideav_scribe::{Face, FaceChain};
+# use oxideav_core::{Segment, SubtitleCue};
+# let cue = SubtitleCue { segments: vec![Segment::Text("Hello".into())], ..Default::default() };
 
 let bytes = std::fs::read("DejaVuSans.ttf")?;
 let face  = Face::from_ttf_bytes(bytes)?;
@@ -49,6 +53,7 @@ let chain = FaceChain::new(face); // .push_fallback(cjk).push_fallback(emoji) fo
 let mut comp = Compositor::with_face(640, 480, chain);
 comp.font_size_px = 24.0;
 let buf = comp.render(&cue);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Glyphs are anti-aliased and shaped (kerning, GSUB ligatures, face-chain
@@ -64,13 +69,31 @@ colour from `Segment::Color` is honoured.
 ### Wrapper decoder
 
 ```rust
-use oxideav_subtitle::{make_rendered_decoder, make_rendered_decoder_with_face};
+use oxideav_core::{CodecId, CodecParameters, RuntimeContext};
+use oxideav_subtitle::{
+    make_rendered_decoder, make_rendered_decoder_with_face, RenderedSubtitleDecoder,
+};
+
+let mut ctx = RuntimeContext::new();
+oxideav_subtitle::register(&mut ctx);
+let params = CodecParameters::subtitle(CodecId::new("subrip"));
+# fn load_chain() -> Result<oxideav_scribe::FaceChain, Box<dyn std::error::Error>> {
+#     let face = oxideav_scribe::Face::from_ttf_bytes(std::fs::read("DejaVuSans.ttf")?)?;
+#     Ok(oxideav_scribe::FaceChain::new(face))
+# }
+
 // Bitmap-font path:
+let srt_decoder = ctx.codecs.first_decoder(&params)?;
 let video_dec = make_rendered_decoder(srt_decoder, 640, 480);
 // Scribe + Raster TTF path (requires the `text` feature):
+let srt_decoder = ctx.codecs.first_decoder(&params)?;
+# let chain = load_chain()?;
 let video_dec = make_rendered_decoder_with_face(srt_decoder, 640, 480, chain);
 // Or builder form:
+let srt_decoder = ctx.codecs.first_decoder(&params)?;
+# let chain = load_chain()?;
 let video_dec = RenderedSubtitleDecoder::new(srt_decoder, 640, 480).with_face(chain);
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 ### Limitations on the Scribe + Raster path
@@ -428,6 +451,10 @@ re-walking the tokens to learn each run's in-scope transform set.
 
 ```rust
 use oxideav_subtitle::evaluate_line_at;
+# use oxideav_subtitle::{ass_tags::tokenize, resolve_tokens, StyleBase};
+# let toks = tokenize("{\\fad(200,200)}Hello {\\t(\\fs40)}world");
+# let line = resolve_tokens(&toks, &StyleBase::default());
+# let (t, dur) = (500_i64, 2_000_i64);
 let ev = evaluate_line_at(&line, &toks, t, dur);
 for span in &ev.spans {
     // draw span.text at ev.position in span.style, with span.karaoke_fill
