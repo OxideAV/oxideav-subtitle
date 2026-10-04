@@ -137,6 +137,8 @@ fn subtitle_caps(impl_name: &str) -> CodecCapabilities {
         max_channels: None,
         priority: 100,
         accepted_pixel_formats: Vec::new(),
+        // Fields this subtitle codec does not constrain keep their defaults.
+        ..CodecCapabilities::audio(String::new())
     }
 }
 
