@@ -121,25 +121,14 @@ pub use ttml::{
 /// subtitle registered here is `decode=true, encode=true, intra_only=true,
 /// lossless=true, media_type=Subtitle`.
 fn subtitle_caps(impl_name: &str) -> CodecCapabilities {
-    CodecCapabilities {
-        decode: false,
-        encode: false,
-        media_type: MediaType::Subtitle,
-        intra_only: true,
-        lossy: false,
-        lossless: true,
-        hardware_accelerated: false,
-        implementation: impl_name.into(),
-        max_width: None,
-        max_height: None,
-        max_bitrate: None,
-        max_sample_rate: None,
-        max_channels: None,
-        priority: 100,
-        accepted_pixel_formats: Vec::new(),
-        // Fields this subtitle codec does not constrain keep their defaults.
-        ..CodecCapabilities::audio(String::new())
-    }
+    // Constructor + builders: `CodecCapabilities` is `#[non_exhaustive]`, so
+    // a literal (or struct update) here would stop compiling whenever core
+    // adds a field.
+    let mut caps = CodecCapabilities::audio(impl_name)
+        .with_intra_only(true)
+        .with_lossless(true);
+    caps.media_type = MediaType::Subtitle;
+    caps
 }
 
 /// Register all text subtitle codecs (decoders + encoders). Each
