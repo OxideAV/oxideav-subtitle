@@ -1,8 +1,8 @@
 //! ASS / SSA serialization + round-trip fidelity tests.
 
 use oxideav_subtitle::ass_emit::{color_to_string, serialize_line, style_row_to_string};
-use oxideav_subtitle::ass_resolve::{resolve_line, Rgba, StyleBase};
-use oxideav_subtitle::ass_style_row::{parse_style_row, DEFAULT_V4PLUS_FORMAT};
+use oxideav_subtitle::ass_resolve::{Rgba, StyleBase, resolve_line};
+use oxideav_subtitle::ass_style_row::{DEFAULT_V4PLUS_FORMAT, parse_style_row};
 
 fn base() -> StyleBase {
     StyleBase::default()

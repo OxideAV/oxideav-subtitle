@@ -44,8 +44,8 @@
 
 use crate::ass_resolve::{LineLayout, Move, ResolvedStyle, Rgba};
 use crate::ass_tags::{
-    decode_alpha_hex, decode_bgr_hex, AssBlurKind, AssBorderAxis, AssColorTarget, AssFadeSpec,
-    AssRotationAxis, AssTag,
+    AssBlurKind, AssBorderAxis, AssColorTarget, AssFadeSpec, AssRotationAxis, AssTag,
+    decode_alpha_hex, decode_bgr_hex,
 };
 
 /// The fade opacity multiplier at a given instant, in the ASS alpha
@@ -687,7 +687,7 @@ pub fn evaluate_line_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ass_resolve::{resolve_line, ResolvedLine, StyleBase};
+    use crate::ass_resolve::{ResolvedLine, StyleBase, resolve_line};
     use crate::ass_tags::tokenize;
 
     fn layout(text: &str) -> LineLayout {
@@ -1039,7 +1039,7 @@ mod tests {
         let ev = evaluate_line_at(&line, &toks, 600, 2000);
         assert_eq!(ev.spans.len(), 2);
         assert_eq!(ev.spans[0].karaoke_fill, 1.0); // [0,500] done
-                                                   // second sweeps [500,1000]: at 600 -> 0.2.
+        // second sweeps [500,1000]: at 600 -> 0.2.
         assert!((ev.spans[1].karaoke_fill - 0.2).abs() < 1e-9);
     }
 

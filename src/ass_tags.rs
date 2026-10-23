@@ -1135,17 +1135,17 @@ fn classify_clip(tag: &str) -> Option<AssTag> {
     // an undocumented two-coordinate list stays an untyped
     // [`AssTag::Other`].
     if parts.len() == 2 {
-        if let Some((scale, commands)) = args.split_once(',') {
-            if is_drawing_commands(commands) {
-                let scale = canon_u32(scale)?;
-                return Some(AssTag::Clip {
-                    inverse,
-                    shape: AssClipShape::Drawing {
-                        scale: Some(scale),
-                        commands: commands.to_string(),
-                    },
-                });
-            }
+        if let Some((scale, commands)) = args.split_once(',')
+            && is_drawing_commands(commands)
+        {
+            let scale = canon_u32(scale)?;
+            return Some(AssTag::Clip {
+                inverse,
+                shape: AssClipShape::Drawing {
+                    scale: Some(scale),
+                    commands: commands.to_string(),
+                },
+            });
         }
         return None;
     }

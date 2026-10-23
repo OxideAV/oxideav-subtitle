@@ -6,7 +6,7 @@ use oxideav_core::Decoder;
 use oxideav_core::{CodecId, Error, Frame, Packet, Result, Segment, SubtitleCue};
 #[cfg(feature = "text")]
 use oxideav_subtitle::make_rendered_decoder_with_face;
-use oxideav_subtitle::{make_rendered_decoder, Compositor, RenderedSubtitleDecoder};
+use oxideav_subtitle::{Compositor, RenderedSubtitleDecoder, make_rendered_decoder};
 
 fn mkcue(segs: Vec<Segment>) -> SubtitleCue {
     SubtitleCue {

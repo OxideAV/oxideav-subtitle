@@ -77,11 +77,7 @@ fn register_fmt<F: FormatOps>(reg: &mut ContainerRegistry, name: &'static str, e
 }
 
 fn probe_srt(p: &ProbeData) -> u8 {
-    if srt::looks_like_srt(p.buf) {
-        75
-    } else {
-        0
-    }
+    if srt::looks_like_srt(p.buf) { 75 } else { 0 }
 }
 
 fn probe_webvtt(p: &ProbeData) -> u8 {
@@ -407,11 +403,11 @@ impl<F: FormatOps> Muxer for GenericTextSubtitleMuxer<F> {
         // Formats that need this (WebVTT styles, STL GSI, TTML styles)
         // re-parse the extradata as a truncated file. Ignore parse
         // errors — an empty seed is preferable to refusing to mux.
-        if !self.extradata.is_empty() {
-            if let Ok(parsed) = F::parse(&self.extradata) {
-                track.styles = parsed.styles;
-                track.metadata = parsed.metadata;
-            }
+        if !self.extradata.is_empty()
+            && let Ok(parsed) = F::parse(&self.extradata)
+        {
+            track.styles = parsed.styles;
+            track.metadata = parsed.metadata;
         }
         for pkt in &self.buffered {
             let cue = F::bytes_to_cue(&pkt.data)?;
@@ -491,11 +487,12 @@ impl Muxer for LegacyTextSubtitleMuxer {
             extradata: self.extradata.clone(),
             ..SubtitleTrack::default()
         };
-        if !self.extradata.is_empty() && self.format == "webvtt" {
-            if let Ok(parsed) = webvtt::parse(&self.extradata) {
-                track.styles = parsed.styles;
-                track.metadata = parsed.metadata;
-            }
+        if !self.extradata.is_empty()
+            && self.format == "webvtt"
+            && let Ok(parsed) = webvtt::parse(&self.extradata)
+        {
+            track.styles = parsed.styles;
+            track.metadata = parsed.metadata;
         }
         for pkt in &self.buffered {
             let cue = match self.format {

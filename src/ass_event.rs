@@ -218,11 +218,7 @@ pub fn parse_time(s: &str) -> Option<CentiSec> {
         }
         // `5` means 50 cs, `05` means 5 cs.
         let v: i64 = cc.parse().ok()?;
-        if cc.len() == 1 {
-            v * 10
-        } else {
-            v
-        }
+        if cc.len() == 1 { v * 10 } else { v }
     };
     Some(((h * 3600 + m * 60 + sec) * 100) + centi)
 }

@@ -5,8 +5,9 @@
 //! crate-level documented contract.
 
 use oxideav_subtitle::{
-    ass_script_info::{script_info_keys, AssScriptInfo, Collisions, WrapStyle},
-    script_info, SourceFormat, SubtitleTrack,
+    SourceFormat, SubtitleTrack,
+    ass_script_info::{AssScriptInfo, Collisions, WrapStyle, script_info_keys},
+    script_info,
 };
 
 fn ass_track(meta: &[(&str, &str)]) -> SubtitleTrack {

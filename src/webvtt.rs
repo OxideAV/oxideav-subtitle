@@ -177,11 +177,11 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
         }
     } else {
         out.push_str("WEBVTT");
-        if let Some(h) = track.metadata.iter().find(|(k, _)| k == "header") {
-            if !h.1.is_empty() {
-                out.push(' ');
-                out.push_str(&h.1);
-            }
+        if let Some(h) = track.metadata.iter().find(|(k, _)| k == "header")
+            && !h.1.is_empty()
+        {
+            out.push(' ');
+            out.push_str(&h.1);
         }
         out.push('\n');
 
@@ -321,11 +321,11 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
             .find(|(k, _)| k.strip_prefix("vtt_cue_id.") == Some(idx.to_string().as_str()))
             .map(|(_, v)| v.as_str());
         out.push('\n');
-        if let Some(id) = cue_id {
-            if !id.is_empty() {
-                out.push_str(id);
-                out.push('\n');
-            }
+        if let Some(id) = cue_id
+            && !id.is_empty()
+        {
+            out.push_str(id);
+            out.push('\n');
         }
         out.push_str(&format_timing_line_with_extras(cue, extras));
         out.push('\n');
@@ -733,10 +733,10 @@ fn parse_webvtt_percentage(s: &str) -> Option<f32> {
     if int_part.is_empty() || !int_part.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    if let Some(frac_part) = parts.next() {
-        if frac_part.is_empty() || !frac_part.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
+    if let Some(frac_part) = parts.next()
+        && (frac_part.is_empty() || !frac_part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
     }
     let val: f32 = body.parse().ok()?;
     if (0.0..=100.0).contains(&val) {
@@ -760,10 +760,10 @@ fn parse_webvtt_line_number(s: &str) -> Option<f32> {
     if int_part.is_empty() || !int_part.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    if let Some(frac_part) = parts.next() {
-        if frac_part.is_empty() || !frac_part.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
+    if let Some(frac_part) = parts.next()
+        && (frac_part.is_empty() || !frac_part.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
     }
     let val: f32 = body.parse().ok()?;
     Some(if neg { -val } else { val })
@@ -833,12 +833,12 @@ fn parse_cue_block(block: &[&str], track: &mut SubtitleTrack) {
     // byte-stable. Empty identifiers are skipped (the block splitter
     // already strips blank lines, but the safety net keeps a stray empty
     // string from emitting a spurious blank line at write time).
-    if let Some(id) = cue_id {
-        if !id.is_empty() {
-            track
-                .metadata
-                .push((format!("vtt_cue_id.{cue_idx}"), id.to_string()));
-        }
+    if let Some(id) = cue_id
+        && !id.is_empty()
+    {
+        track
+            .metadata
+            .push((format!("vtt_cue_id.{cue_idx}"), id.to_string()));
     }
     track.cues.push(SubtitleCue {
         start_us: parsed.start_us,
@@ -1810,10 +1810,11 @@ mod tests {
     fn parses_vertical_setting() {
         let src = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000 vertical:rl\nhi\n";
         let t = parse(src.as_bytes()).unwrap();
-        assert!(t
-            .metadata
-            .iter()
-            .any(|(k, v)| k == "vtt_cue_extra.0" && v.contains("vertical:rl")));
+        assert!(
+            t.metadata
+                .iter()
+                .any(|(k, v)| k == "vtt_cue_extra.0" && v.contains("vertical:rl"))
+        );
         let out = String::from_utf8(write(&t)).unwrap();
         assert!(out.contains("vertical:rl"), "round-trip: {out}");
     }
@@ -2355,10 +2356,11 @@ STYLE
         let s = t.style("x").unwrap();
         assert_eq!(s.primary_color.unwrap().0, 255);
         // No `cursor` or `display` extra leaked through.
-        assert!(!t
-            .metadata
-            .iter()
-            .any(|(k, _)| k == "vtt_style.x.cursor" || k == "vtt_style.x.display"));
+        assert!(
+            !t.metadata
+                .iter()
+                .any(|(k, _)| k == "vtt_style.x.cursor" || k == "vtt_style.x.display")
+        );
     }
 
     #[test]
@@ -2407,10 +2409,11 @@ STYLE
 ";
         let t = parse(src.as_bytes()).unwrap();
         assert!(t.metadata.iter().any(|(k, _)| k == "vtt_style.a.opacity"));
-        assert!(t
-            .metadata
-            .iter()
-            .any(|(k, _)| k == "vtt_style.b.line-height"));
+        assert!(
+            t.metadata
+                .iter()
+                .any(|(k, _)| k == "vtt_style.b.line-height")
+        );
         let out = write_synth(&t);
         // Both rules survive and stay paired with the right extras.
         assert!(out.contains("::cue(.a) {"), "{out}");
@@ -2639,20 +2642,22 @@ STYLE
     fn signature_with_tab_separator_keeps_trailing_text() {
         let src = "WEBVTT\tLanguage: en\n\n00:00:01.000 --> 00:00:02.000\nhi\n";
         let t = parse(src.as_bytes()).unwrap();
-        assert!(t
-            .metadata
-            .iter()
-            .any(|(k, v)| k == "header" && v == "Language: en"));
+        assert!(
+            t.metadata
+                .iter()
+                .any(|(k, v)| k == "header" && v == "Language: en")
+        );
     }
 
     #[test]
     fn signature_with_space_separator_keeps_trailing_text() {
         let src = "WEBVTT Subtitles in English\n\n00:00:01.000 --> 00:00:02.000\nhi\n";
         let t = parse(src.as_bytes()).unwrap();
-        assert!(t
-            .metadata
-            .iter()
-            .any(|(k, v)| k == "header" && v == "Subtitles in English"));
+        assert!(
+            t.metadata
+                .iter()
+                .any(|(k, v)| k == "header" && v == "Subtitles in English")
+        );
     }
 
     #[test]

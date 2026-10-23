@@ -34,10 +34,11 @@ second line
 fn parses_header_and_style() {
     let t = webvtt::parse(SAMPLE.as_bytes()).unwrap();
     // Header trailing stored in metadata.
-    assert!(t
-        .metadata
-        .iter()
-        .any(|(k, v)| k == "header" && v == "Language: en"));
+    assert!(
+        t.metadata
+            .iter()
+            .any(|(k, v)| k == "header" && v == "Language: en")
+    );
     // Two style classes + one region.
     let yellow = t.styles.iter().find(|s| s.name == "yellow").unwrap();
     assert!(yellow.bold);

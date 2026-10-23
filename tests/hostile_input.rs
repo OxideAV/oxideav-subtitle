@@ -12,7 +12,7 @@
 //! curated seeds below include their triggering shapes so the guard stays
 //! meaningful even at the reduced (CI-fast) corpus size.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use oxideav_subtitle::{
     aqtitle, ass_script, ebu_stl, jacosub, microdvd, mpl2, mpsub, pjs, realtext, sami, srt,

@@ -47,13 +47,13 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
     // Grab the first <STYLE ...> block so we can parse CSS classes into
     // style rows.
     let lc = text.to_ascii_lowercase();
-    if let Some(sty_start) = lc.find("<style") {
-        if let Some(body_start_rel) = lc[sty_start..].find('>') {
-            let body_start = sty_start + body_start_rel + 1;
-            if let Some(end_rel) = lc[body_start..].find("</style>") {
-                let raw = &text[body_start..body_start + end_rel];
-                track.styles.extend(parse_sami_css(raw));
-            }
+    if let Some(sty_start) = lc.find("<style")
+        && let Some(body_start_rel) = lc[sty_start..].find('>')
+    {
+        let body_start = sty_start + body_start_rel + 1;
+        if let Some(end_rel) = lc[body_start..].find("</style>") {
+            let raw = &text[body_start..body_start + end_rel];
+            track.styles.extend(parse_sami_css(raw));
         }
     }
 
@@ -112,20 +112,20 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
         if is_clear {
             // If we have a previous cue that hasn't been closed yet,
             // close it at this time.
-            if let Some(last) = track.cues.last_mut() {
-                if last.end_us == 0 || last.end_us > start_us {
-                    last.end_us = start_us;
-                }
+            if let Some(last) = track.cues.last_mut()
+                && (last.end_us == 0 || last.end_us > start_us)
+            {
+                last.end_us = start_us;
             }
             continue;
         }
         let (class_name, segments) = parse_inline_sami(body);
         // Close the previous cue, if any, at this new start.
         let mut end_us = start_us + DEFAULT_DUR_US;
-        if let Some(last) = track.cues.last_mut() {
-            if last.end_us == 0 || last.end_us > start_us {
-                last.end_us = start_us;
-            }
+        if let Some(last) = track.cues.last_mut()
+            && (last.end_us == 0 || last.end_us > start_us)
+        {
+            last.end_us = start_us;
         }
         // If there's a next sync, extend end to it initially.
         if idx + 1 < syncs_len {
@@ -357,17 +357,17 @@ fn parse_inline_sami(src: &str) -> (Option<String>, Vec<Segment>) {
     let mut class_name: Option<String> = None;
     let mut body = src.to_string();
     let lc = body.to_ascii_lowercase();
-    if let Some(p_open) = lc.find("<p") {
-        if let Some(tag_end) = body[p_open..].find('>') {
-            let open_tag = &body[p_open..p_open + tag_end];
-            class_name = extract_class_attr(open_tag);
-            // Slice to inside.
-            let start = p_open + tag_end + 1;
-            let lc_rest = lc[start..].to_string();
-            let close = lc_rest.find("</p>");
-            let end = close.map(|c| start + c).unwrap_or(body.len());
-            body = body[start..end].to_string();
-        }
+    if let Some(p_open) = lc.find("<p")
+        && let Some(tag_end) = body[p_open..].find('>')
+    {
+        let open_tag = &body[p_open..p_open + tag_end];
+        class_name = extract_class_attr(open_tag);
+        // Slice to inside.
+        let start = p_open + tag_end + 1;
+        let lc_rest = lc[start..].to_string();
+        let close = lc_rest.find("</p>");
+        let end = close.map(|c| start + c).unwrap_or(body.len());
+        body = body[start..end].to_string();
     }
 
     let mut p = TagSoup {
@@ -441,14 +441,14 @@ impl<'a> TagSoup<'a> {
                 let is_close = name.starts_with('/');
                 // End of file / body / sync — stop.
                 if is_close {
-                    if let Some(stop_tag) = stop {
-                        if name_lc == stop_tag {
-                            if !buf.is_empty() {
-                                out.push(Segment::Text(std::mem::take(&mut buf)));
-                            }
-                            self.pos = tag_end + 1;
-                            return out;
+                    if let Some(stop_tag) = stop
+                        && name_lc == stop_tag
+                    {
+                        if !buf.is_empty() {
+                            out.push(Segment::Text(std::mem::take(&mut buf)));
                         }
+                        self.pos = tag_end + 1;
+                        return out;
                     }
                     // Generic close — just skip.
                     self.pos = tag_end + 1;

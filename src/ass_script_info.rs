@@ -441,10 +441,11 @@ mod tests {
         let info = script_info(&t);
         assert_eq!(info.title.as_deref(), Some("X"));
         // The custom keys stay in t.metadata; the accessor doesn't drop them.
-        assert!(t
-            .metadata
-            .iter()
-            .any(|(k, _)| k == "aegisub_project_garbage"));
+        assert!(
+            t.metadata
+                .iter()
+                .any(|(k, _)| k == "aegisub_project_garbage")
+        );
     }
 
     #[test]

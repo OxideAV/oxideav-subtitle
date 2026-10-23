@@ -90,10 +90,10 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
             let key_lc = key.to_ascii_lowercase();
             match key_lc.as_str() {
                 "timeres" => {
-                    if let Ok(v) = value.trim().parse::<u32>() {
-                        if v > 0 {
-                            timeres = v;
-                        }
+                    if let Ok(v) = value.trim().parse::<u32>()
+                        && v > 0
+                    {
+                        timeres = v;
                     }
                 }
                 "shift" => {
@@ -181,11 +181,7 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
 
 /// Quick header check — did the buffer look like JACOsub?
 pub fn probe(buf: &[u8]) -> u8 {
-    if looks_like_jacosub(buf) {
-        85
-    } else {
-        0
-    }
+    if looks_like_jacosub(buf) { 85 } else { 0 }
 }
 
 /// Factory for a codec-registry decoder binding.
@@ -660,10 +656,10 @@ pub(crate) fn bytes_to_cue(bytes: &[u8]) -> Result<SubtitleCue> {
     let text = crate::encoding::decode_subtitle_text(bytes);
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with('@') {
-            if let Some(c) = parse_cue_line(trimmed, 100, 0) {
-                return Ok(c);
-            }
+        if trimmed.starts_with('@')
+            && let Some(c) = parse_cue_line(trimmed, 100, 0)
+        {
+            return Ok(c);
         }
     }
     Err(Error::invalid("JACOsub: no cue in payload"))

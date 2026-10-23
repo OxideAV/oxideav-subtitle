@@ -3,8 +3,8 @@
 //! `WrapStyle` from the previous step.
 
 use oxideav_subtitle::ass_tags::{
-    decode_alpha_hex, decode_bgr_hex, decode_decimal, emit, legacy_align_to_numpad, plain_text,
-    tokenize, AssRotationAxis,
+    AssRotationAxis, decode_alpha_hex, decode_bgr_hex, decode_decimal, emit,
+    legacy_align_to_numpad, plain_text, tokenize,
 };
 use oxideav_subtitle::{
     AssBlurKind, AssBorderAxis, AssClipShape, AssColorTarget, AssFadeSpec, AssKaraokeKind, AssTag,
@@ -24,12 +24,16 @@ fn realistic_dialogue_text_round_trips_byte_stable() {
     assert_eq!(emit(&tokens), text);
 
     // The typed layer surfaces the flags the IR can model …
-    assert!(tokens
-        .iter()
-        .any(|t| *t == AssToken::Override(vec![AssTag::Bold(Some(1))])));
-    assert!(tokens
-        .iter()
-        .any(|t| *t == AssToken::Override(vec![AssTag::Bold(Some(0))])));
+    assert!(
+        tokens
+            .iter()
+            .any(|t| *t == AssToken::Override(vec![AssTag::Bold(Some(1))]))
+    );
+    assert!(
+        tokens
+            .iter()
+            .any(|t| *t == AssToken::Override(vec![AssTag::Bold(Some(0))]))
+    );
     // … the primary-fill colour from the typeset block (numbered \1c
     // spelling, target + verbatim digits preserved, BGR decode) …
     let colour = AssTag::Color {

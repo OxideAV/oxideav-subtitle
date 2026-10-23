@@ -46,10 +46,10 @@ fn preserves_inline_color_span() {
     let segs = &t.cues[0].segments;
     let mut saw_color = false;
     visit(segs, &mut |s| {
-        if let Segment::Color { rgb, .. } = s {
-            if *rgb == (255, 0, 0) {
-                saw_color = true;
-            }
+        if let Segment::Color { rgb, .. } = s
+            && *rgb == (255, 0, 0)
+        {
+            saw_color = true;
         }
     });
     assert!(saw_color, "expected #FF0000 color span");
@@ -301,14 +301,16 @@ fn full_imsc1_document_parses_and_round_trips() {
     assert!(t.metadata.iter().any(|(k, _)| k == "ttml_region.top"));
 
     // Per-cue region references.
-    assert!(t
-        .metadata
-        .iter()
-        .any(|(k, v)| k == "ttml_cue_region.0" && v == "bottom"));
-    assert!(t
-        .metadata
-        .iter()
-        .any(|(k, v)| k == "ttml_cue_region.1" && v == "top"));
+    assert!(
+        t.metadata
+            .iter()
+            .any(|(k, v)| k == "ttml_cue_region.0" && v == "bottom")
+    );
+    assert!(
+        t.metadata
+            .iter()
+            .any(|(k, v)| k == "ttml_cue_region.1" && v == "top")
+    );
 
     // Params captured.
     assert_eq!(
@@ -337,10 +339,11 @@ fn full_imsc1_document_parses_and_round_trips() {
         assert_eq!(a.start_us, b.start_us);
         assert_eq!(a.end_us, b.end_us);
     }
-    assert!(t2
-        .metadata
-        .iter()
-        .any(|(k, v)| k == "ttml_region.bottom" && v.contains("tts:origin=\"10% 80%\"")));
+    assert!(
+        t2.metadata
+            .iter()
+            .any(|(k, v)| k == "ttml_region.bottom" && v.contains("tts:origin=\"10% 80%\""))
+    );
     assert_eq!(
         t2.metadata
             .iter()
@@ -430,10 +433,11 @@ fn inline_p_styling_round_trips() {
         }
     });
     assert!(saw_italic, "inline tts:fontStyle=\"italic\" wraps content");
-    assert!(t
-        .metadata
-        .iter()
-        .any(|(k, v)| k == "ttml_p_extra.0" && v.contains("tts:displayAlign=\"after\"")));
+    assert!(
+        t.metadata
+            .iter()
+            .any(|(k, v)| k == "ttml_p_extra.0" && v.contains("tts:displayAlign=\"after\""))
+    );
 
     // Write: the <p> regrows both the inline displayAlign extra and
     // the writer emits `<span tts:fontStyle="italic">` from the
@@ -453,10 +457,11 @@ fn inline_p_styling_round_trips() {
         }
     });
     assert!(saw_italic2, "italic survives round-trip");
-    assert!(t2
-        .metadata
-        .iter()
-        .any(|(k, v)| k == "ttml_p_extra.0" && v.contains("tts:displayAlign=\"after\"")));
+    assert!(
+        t2.metadata
+            .iter()
+            .any(|(k, v)| k == "ttml_p_extra.0" && v.contains("tts:displayAlign=\"after\""))
+    );
 }
 
 #[test]
@@ -470,20 +475,22 @@ fn inline_p_styling_textalign_justify_carried_too() {
   </div></body>\n\
 </tt>";
     let t = ttml::parse(src.as_bytes()).unwrap();
-    assert!(t
-        .metadata
-        .iter()
-        .any(|(k, v)| k == "ttml_p_extra.0" && v.contains("tts:textAlign=\"justify\"")));
+    assert!(
+        t.metadata
+            .iter()
+            .any(|(k, v)| k == "ttml_p_extra.0" && v.contains("tts:textAlign=\"justify\""))
+    );
 }
 
 #[test]
 fn p_without_inline_styling_does_not_emit_extras_key() {
     // Negative case — a plain <p> must NOT push a stray `ttml_p_extra.<idx>`.
     let t = ttml::parse(SAMPLE.as_bytes()).unwrap();
-    assert!(!t
-        .metadata
-        .iter()
-        .any(|(k, _)| k.starts_with("ttml_p_extra.")));
+    assert!(
+        !t.metadata
+            .iter()
+            .any(|(k, _)| k.starts_with("ttml_p_extra."))
+    );
 }
 
 #[test]

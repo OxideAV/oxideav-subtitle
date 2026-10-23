@@ -250,10 +250,9 @@ fn strip_keyword<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
         } else {
             None
         }
-    }) {
-        if let Some(after) = rest.trim_start().strip_prefix(':') {
-            return Some(after.trim_start());
-        }
+    }) && let Some(after) = rest.trim_start().strip_prefix(':')
+    {
+        return Some(after.trim_start());
     }
     Some(t)
 }

@@ -127,36 +127,35 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
     if let Some(head) = find_element(&tt.children, "head") {
         if let Some(styling) = find_element(&head.children, "styling") {
             for child in &styling.children {
-                if let Node::Element(e) = child {
-                    if tag_local(&e.name) == "style" {
-                        if let Some(s) = build_style(e) {
-                            track.styles.push(s);
+                if let Node::Element(e) = child
+                    && tag_local(&e.name) == "style"
+                {
+                    if let Some(s) = build_style(e) {
+                        track.styles.push(s);
+                    }
+                    // Preserve any IR-unmodelled tts:* / itts:* attrs as
+                    // ttml_style_extra.<id> metadata (canonical order).
+                    if let Some(id) = attr(e, "xml:id").or_else(|| attr(e, "id")) {
+                        let extras = collect_style_extras(e);
+                        if !extras.is_empty() {
+                            track
+                                .metadata
+                                .push((format!("ttml_style_extra.{}", id), extras));
                         }
-                        // Preserve any IR-unmodelled tts:* / itts:* attrs as
-                        // ttml_style_extra.<id> metadata (canonical order).
-                        if let Some(id) = attr(e, "xml:id").or_else(|| attr(e, "id")) {
-                            let extras = collect_style_extras(e);
-                            if !extras.is_empty() {
+                        // TTML2 §8.4.1.1: a `<style>` may itself carry a
+                        // `style` attribute referencing one or more other
+                        // styles it inherits from ("nested" / chained
+                        // referential styling). The IR `SubtitleStyle` has
+                        // no field for it, so preserve the raw id list as
+                        // `ttml_style_ref.<id>` so the writer can re-emit
+                        // the chain and `resolve_referenced_style` can walk
+                        // it.
+                        if let Some(chain) = attr(e, "style") {
+                            let chain = chain.trim();
+                            if !chain.is_empty() {
                                 track
                                     .metadata
-                                    .push((format!("ttml_style_extra.{}", id), extras));
-                            }
-                            // TTML2 §8.4.1.1: a `<style>` may itself carry a
-                            // `style` attribute referencing one or more other
-                            // styles it inherits from ("nested" / chained
-                            // referential styling). The IR `SubtitleStyle` has
-                            // no field for it, so preserve the raw id list as
-                            // `ttml_style_ref.<id>` so the writer can re-emit
-                            // the chain and `resolve_referenced_style` can walk
-                            // it.
-                            if let Some(chain) = attr(e, "style") {
-                                let chain = chain.trim();
-                                if !chain.is_empty() {
-                                    track.metadata.push((
-                                        format!("ttml_style_ref.{}", id),
-                                        chain.to_string(),
-                                    ));
-                                }
+                                    .push((format!("ttml_style_ref.{}", id), chain.to_string()));
                             }
                         }
                     }
@@ -166,13 +165,12 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
         // Parse <head><layout><region .../></layout></head>. IMSC1 §7.
         if let Some(layout) = find_element(&head.children, "layout") {
             for child in &layout.children {
-                if let Node::Element(e) = child {
-                    if tag_local(&e.name) == "region" {
-                        if let Some(id) = attr(e, "xml:id").or_else(|| attr(e, "id")) {
-                            let attrs = collect_region_attrs(e);
-                            track.metadata.push((format!("ttml_region.{}", id), attrs));
-                        }
-                    }
+                if let Node::Element(e) = child
+                    && tag_local(&e.name) == "region"
+                    && let Some(id) = attr(e, "xml:id").or_else(|| attr(e, "id"))
+                {
+                    let attrs = collect_region_attrs(e);
+                    track.metadata.push((format!("ttml_region.{}", id), attrs));
                 }
             }
         }
@@ -338,11 +336,10 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
                     .metadata
                     .iter()
                     .find(|(k, _)| k.strip_prefix("ttml_style_extra.") == Some(s.name.as_str()))
+                    && !extras.is_empty()
                 {
-                    if !extras.is_empty() {
-                        out.push(' ');
-                        out.push_str(extras);
-                    }
+                    out.push(' ');
+                    out.push_str(extras);
                 }
                 out.push_str("/>\n");
             }
@@ -380,19 +377,19 @@ pub fn write(track: &SubtitleTrack) -> Vec<u8> {
         // Replay IR-unmodelled inline tts:* / itts:* attrs captured at
         // parse time from this cue's `<p>` (TTML2 §8.1.5).
         let p_extra_key = format!("ttml_p_extra.{}", idx);
-        if let Some((_, extras)) = track.metadata.iter().find(|(k, _)| k == &p_extra_key) {
-            if !extras.is_empty() {
-                out.push(' ');
-                out.push_str(extras);
-            }
+        if let Some((_, extras)) = track.metadata.iter().find(|(k, _)| k == &p_extra_key)
+            && !extras.is_empty()
+        {
+            out.push(' ');
+            out.push_str(extras);
         }
         // Re-emit `xml:space="preserve"` for a cue captured in preserve
         // mode (TTML2 §8.2.10) so its verbatim text round-trips.
         let xml_space_key = format!("ttml_cue_xml_space.{}", idx);
-        if let Some((_, v)) = track.metadata.iter().find(|(k, _)| k == &xml_space_key) {
-            if v == "preserve" {
-                out.push_str(" xml:space=\"preserve\"");
-            }
+        if let Some((_, v)) = track.metadata.iter().find(|(k, _)| k == &xml_space_key)
+            && v == "preserve"
+        {
+            out.push_str(" xml:space=\"preserve\"");
         }
         out.push('>');
         write_segments(&cue.segments, &mut out);
@@ -875,10 +872,10 @@ fn wrap_with_style(el: &Element, mut children: Vec<Segment>) -> Segment {
     if deco_lc.contains("line-through") || deco_lc.contains("strike") {
         children = vec![Segment::Strike(children)];
     }
-    if let Some(c) = color {
-        if let Some(rgb) = parse_ttml_color_rgb(&c) {
-            children = vec![Segment::Color { rgb, children }];
-        }
+    if let Some(c) = color
+        && let Some(rgb) = parse_ttml_color_rgb(&c)
+    {
+        children = vec![Segment::Color { rgb, children }];
     }
     if fam.is_some() || sz.is_some() {
         children = vec![Segment::Font {
@@ -948,10 +945,10 @@ fn apply_tts_attrs(e: &Element, s: &mut SubtitleStyle) {
             s.strike = true;
         }
     }
-    if let Some(a) = attr(e, "tts:textAlign") {
-        if let Some(ta) = parse_text_align(&a) {
-            s.align = ta;
-        }
+    if let Some(a) = attr(e, "tts:textAlign")
+        && let Some(ta) = parse_text_align(&a)
+    {
+        s.align = ta;
     }
 }
 
@@ -974,11 +971,11 @@ pub fn region_style(track: &SubtitleTrack, region_id: &str) -> Option<SubtitleSt
     let el = find_element(&nodes, "r")?;
     let mut acc = SubtitleStyle::new(region_id);
     let mut any = false;
-    if let Some(chain) = attr(el, "style") {
-        if let Some(rs) = resolve_referenced_style(track, &chain) {
-            overlay_style(&mut acc, &rs);
-            any = true;
-        }
+    if let Some(chain) = attr(el, "style")
+        && let Some(rs) = resolve_referenced_style(track, &chain)
+    {
+        overlay_style(&mut acc, &rs);
+        any = true;
     }
     let mut own = SubtitleStyle::new(region_id);
     apply_tts_attrs(el, &mut own);
@@ -986,11 +983,7 @@ pub fn region_style(track: &SubtitleTrack, region_id: &str) -> Option<SubtitleSt
         overlay_style(&mut acc, &own);
         any = true;
     }
-    if any {
-        Some(acc)
-    } else {
-        None
-    }
+    if any { Some(acc) } else { None }
 }
 
 /// Whether a [`SubtitleStyle`] carries no IR-modelled styling (all values at
@@ -1028,24 +1021,19 @@ pub fn effective_style_for_cue_index(
         .metadata
         .iter()
         .find(|(k, _)| k.strip_prefix("ttml_cue_region.") == Some(&cue_index.to_string()))
+        && let Some(rs) = region_style(track, rid)
     {
-        if let Some(rs) = region_style(track, rid) {
-            overlay_style(&mut acc, &rs);
-            any = true;
-        }
+        overlay_style(&mut acc, &rs);
+        any = true;
     }
     // Element `style` reference is more specific — overlays the region.
-    if let Some(sref) = cue.style_ref.as_deref() {
-        if let Some(es) = resolve_referenced_style(track, sref) {
-            overlay_style(&mut acc, &es);
-            any = true;
-        }
+    if let Some(sref) = cue.style_ref.as_deref()
+        && let Some(es) = resolve_referenced_style(track, sref)
+    {
+        overlay_style(&mut acc, &es);
+        any = true;
     }
-    if any {
-        Some(acc)
-    } else {
-        None
-    }
+    if any { Some(acc) } else { None }
 }
 
 /// Resolve a TTML **referential style** reference (the `style="id1 id2 …"`
@@ -1084,11 +1072,7 @@ pub fn resolve_referenced_style(track: &SubtitleTrack, style_ref: &str) -> Optio
     for id in ids {
         any |= apply_style_ref(track, id, &mut acc, &mut visited);
     }
-    if any {
-        Some(acc)
-    } else {
-        None
-    }
+    if any { Some(acc) } else { None }
 }
 
 /// Convenience wrapper: resolve the effective referential style for a cue
@@ -1668,12 +1652,11 @@ fn parse_ttml_time(s: &str, ctx: &TimingCtx) -> Option<i64> {
     let mut total = h * 3_600_000_000 + m * 60_000_000 + sec_us;
     // parts[3] (frames) — needs ttp:frameRate. Without one the frame
     // component is dropped (legacy behaviour); with one we add it on.
-    if parts.len() >= 4 {
-        if let (Ok(frames), Some(fps)) = (parts[3].parse::<f64>(), ctx.frame_rate) {
-            if fps > 0.0 {
-                total += ((frames / fps) * 1_000_000.0) as i64;
-            }
-        }
+    if parts.len() >= 4
+        && let (Ok(frames), Some(fps)) = (parts[3].parse::<f64>(), ctx.frame_rate)
+        && fps > 0.0
+    {
+        total += ((frames / fps) * 1_000_000.0) as i64;
     }
     Some(total)
 }
@@ -2028,10 +2011,10 @@ fn find_seq(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 
 fn find_element<'a>(nodes: &'a [Node], name: &str) -> Option<&'a Element> {
     for n in nodes {
-        if let Node::Element(e) = n {
-            if tag_local(&e.name).eq_ignore_ascii_case(name) {
-                return Some(e);
-            }
+        if let Node::Element(e) = n
+            && tag_local(&e.name).eq_ignore_ascii_case(name)
+        {
+            return Some(e);
         }
     }
     None
@@ -2295,10 +2278,11 @@ mod tests {
         // Re-parse — region survives.
         let t2 = parse(s.as_bytes()).unwrap();
         assert!(t2.metadata.iter().any(|(k, _)| k == "ttml_region.bottom"));
-        assert!(t2
-            .metadata
-            .iter()
-            .any(|(k, v)| k == "ttml_cue_region.0" && v == "bottom"));
+        assert!(
+            t2.metadata
+                .iter()
+                .any(|(k, v)| k == "ttml_cue_region.0" && v == "bottom")
+        );
     }
 
     // ---------------------------------------------------------------
@@ -2518,10 +2502,11 @@ mod tests {
 </tt>"##;
         let t = parse(src.as_bytes()).unwrap();
         // Cue 0 has a region; cue 1 does not.
-        assert!(t
-            .metadata
-            .iter()
-            .any(|(k, v)| k == "ttml_cue_region.0" && v == "top"));
+        assert!(
+            t.metadata
+                .iter()
+                .any(|(k, v)| k == "ttml_cue_region.0" && v == "top")
+        );
         assert!(!t.metadata.iter().any(|(k, _)| k == "ttml_cue_region.1"));
         let s = String::from_utf8(write(&t)).unwrap();
         // The first <p> should carry region="top" but the second must not.
@@ -2710,10 +2695,12 @@ mod tests {
 <tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling">
   <body><div><p begin="0s" end="1s"><span tts:fontWeight="bold">x</span></p></div></body></tt>"##;
         let t = parse(src.as_bytes()).unwrap();
-        assert!(!t.cues[0]
-            .segments
-            .iter()
-            .any(|s| matches!(s, Segment::Timestamp { .. })));
+        assert!(
+            !t.cues[0]
+                .segments
+                .iter()
+                .any(|s| matches!(s, Segment::Timestamp { .. }))
+        );
     }
 
     #[test]

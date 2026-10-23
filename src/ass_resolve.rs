@@ -41,8 +41,8 @@
 //! and the untouched base state) so a renderer can layer them on top.
 
 use crate::ass_tags::{
-    decode_alpha_hex, decode_bgr_hex, legacy_align_to_numpad, tokenize, AssClipShape,
-    AssColorTarget, AssFadeSpec, AssTag, AssToken,
+    AssClipShape, AssColorTarget, AssFadeSpec, AssTag, AssToken, decode_alpha_hex, decode_bgr_hex,
+    legacy_align_to_numpad, tokenize,
 };
 
 /// A 32-bit straight-alpha colour as resolved from an ASS `&Hbbggrr&`
@@ -456,10 +456,10 @@ where
                     // A named-style `\r<style>` swaps the active base
                     // before resetting; bare `\r` (and an unknown name)
                     // resets to the current active base.
-                    if let AssTag::Reset(Some(name)) = tag {
-                        if let Some(swapped) = lookup(name) {
-                            active_base = swapped;
-                        }
+                    if let AssTag::Reset(Some(name)) = tag
+                        && let Some(swapped) = lookup(name)
+                    {
+                        active_base = swapped;
                     }
                     apply_tag(tag, &active_base, &mut cur, &mut layout, &mut pending_k);
                 }

@@ -3,7 +3,7 @@
 use oxideav_core::Segment;
 use oxideav_subtitle::ass_script::{parse, segments_to_ass_text, write};
 use oxideav_subtitle::ass_script_info::script_info;
-use oxideav_subtitle::ir::{plain_text, SourceFormat};
+use oxideav_subtitle::ir::{SourceFormat, plain_text};
 
 const SAMPLE: &str = "\
 [Script Info]

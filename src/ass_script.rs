@@ -29,9 +29,9 @@
 
 use oxideav_core::{Segment, SubtitleCue, SubtitleStyle, TextAlign};
 
-use crate::ass_event::{parse_event, AssEvent};
-use crate::ass_resolve::{resolve_line, ResolvedSpan, StyleBase};
-use crate::ass_style_row::{parse_style_row, DEFAULT_V4PLUS_FORMAT};
+use crate::ass_event::{AssEvent, parse_event};
+use crate::ass_resolve::{ResolvedSpan, StyleBase, resolve_line};
+use crate::ass_style_row::{DEFAULT_V4PLUS_FORMAT, parse_style_row};
 use crate::ir::{SourceFormat, SubtitleTrack};
 
 /// Centiseconds → microseconds (the IR cue timing unit).

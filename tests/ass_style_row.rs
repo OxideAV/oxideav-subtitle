@@ -1,8 +1,8 @@
 //! ASS / SSA `Style:` row + `Format:` header parsing tests.
 
-use oxideav_subtitle::ass_resolve::{resolve_line, Rgba};
+use oxideav_subtitle::ass_resolve::{Rgba, resolve_line};
 use oxideav_subtitle::ass_style_row::{
-    parse_color, parse_format, parse_style_row, DEFAULT_V4PLUS_FORMAT,
+    DEFAULT_V4PLUS_FORMAT, parse_color, parse_format, parse_style_row,
 };
 
 #[test]

@@ -88,20 +88,20 @@ use oxideav_core::{CodecCapabilities, CodecId, MediaType};
 use oxideav_core::{CodecInfo, CodecRegistry};
 
 pub use ass_anim::{
-    animate_style_at, collect_transforms, evaluate_line_at, fade_alpha_at, karaoke_fills,
-    position_at, transform_factor, EvaluatedLine, EvaluatedSpan, FadeAlpha, KaraokeSyllable,
+    EvaluatedLine, EvaluatedSpan, FadeAlpha, KaraokeSyllable, animate_style_at, collect_transforms,
+    evaluate_line_at, fade_alpha_at, karaoke_fills, position_at, transform_factor,
 };
 pub use ass_emit::{color_to_string, serialize_line, style_row_to_string};
 pub use ass_event::{
-    event_to_string, fmt_time, parse_event, parse_time, AssEvent, CentiSec, DEFAULT_EVENT_FORMAT,
+    AssEvent, CentiSec, DEFAULT_EVENT_FORMAT, event_to_string, fmt_time, parse_event, parse_time,
 };
 pub use ass_resolve::{
-    resolve_line, resolve_tokens, resolve_tokens_with_styles, ClipRegion, LineLayout, Move,
-    ResolvedLine, ResolvedSpan, ResolvedStyle, Rgba, StyleBase,
+    ClipRegion, LineLayout, Move, ResolvedLine, ResolvedSpan, ResolvedStyle, Rgba, StyleBase,
+    resolve_line, resolve_tokens, resolve_tokens_with_styles,
 };
 pub use ass_script::{parse as parse_ass, segments_to_ass_text, write as write_ass};
-pub use ass_script_info::{script_info, script_info_keys, AssScriptInfo, Collisions, WrapStyle};
-pub use ass_style_row::{parse_color, parse_format, parse_style_row, DEFAULT_V4PLUS_FORMAT};
+pub use ass_script_info::{AssScriptInfo, Collisions, WrapStyle, script_info, script_info_keys};
+pub use ass_style_row::{DEFAULT_V4PLUS_FORMAT, parse_color, parse_format, parse_style_row};
 pub use ass_tags::{
     AssBlurKind, AssBorderAxis, AssClipShape, AssColorTarget, AssFadeSpec, AssKaraokeKind,
     AssRotationAxis, AssTag, AssToken, DrawCmd,
@@ -111,7 +111,7 @@ pub use font::BitmapFont;
 pub use ir::{SourceFormat, SubtitleTrack};
 #[cfg(feature = "text")]
 pub use render::make_rendered_decoder_with_face;
-pub use render::{make_rendered_decoder, RenderedSubtitleDecoder};
+pub use render::{RenderedSubtitleDecoder, make_rendered_decoder};
 pub use transform::{srt_to_webvtt, webvtt_to_srt};
 pub use ttml::{
     cue_effective_style, effective_style_for_cue_index, region_style, resolve_referenced_style,

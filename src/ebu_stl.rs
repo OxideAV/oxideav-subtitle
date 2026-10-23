@@ -121,7 +121,7 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
 
     // Walk TTI records.
     let tail = &bytes[GSI_SIZE..];
-    if tail.len() % TTI_SIZE != 0 && tail.len() / TTI_SIZE == 0 {
+    if !tail.len().is_multiple_of(TTI_SIZE) && tail.len() / TTI_SIZE == 0 {
         return Err(Error::invalid("EBU STL: TTI section empty / not aligned"));
     }
 
@@ -312,7 +312,7 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
         );
         tti[14] = meta_u8(&track.metadata, &format!("{prefix}.jc"), 0x02);
         tti[15] = 0; // CF — playable row.
-                     // Fill text field.
+        // Fill text field.
         let encoded = encode_text_field(&cue.segments, &cpn);
         let copy_len = encoded.len().min(112);
         tti[16..16 + copy_len].copy_from_slice(&encoded[..copy_len]);
@@ -353,14 +353,14 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
         tti[13] = meta_u8(&track.metadata, &format!("{prefix}.vp"), 0);
         tti[14] = meta_u8(&track.metadata, &format!("{prefix}.jc"), 0);
         tti[15] = 1; // CF — comment.
-        if let Some(s) = meta_get(&track.metadata, &format!("{prefix}.tf_hex")) {
-            if let Some(buf) = hex_to_bytes(&s) {
-                let n = buf.len().min(112);
-                tti[16..16 + n].copy_from_slice(&buf[..n]);
-                // Pad any remaining bytes with 0x8F.
-                for b in &mut tti[16 + n..128] {
-                    *b = 0x8F;
-                }
+        if let Some(s) = meta_get(&track.metadata, &format!("{prefix}.tf_hex"))
+            && let Some(buf) = hex_to_bytes(&s)
+        {
+            let n = buf.len().min(112);
+            tti[16..16 + n].copy_from_slice(&buf[..n]);
+            // Pad any remaining bytes with 0x8F.
+            for b in &mut tti[16 + n..128] {
+                *b = 0x8F;
             }
         }
         out.extend_from_slice(&tti);
@@ -608,13 +608,12 @@ fn walk_encode(segs: &[Segment], out: &mut Vec<u8>, italic: &mut bool, underline
             Segment::Timestamp { .. } => {}
             Segment::Raw(r) => {
                 // Support the `\xNN` placeholder we emit on decode.
-                if let Some(rest) = r.strip_prefix("\\x") {
-                    if rest.len() == 2 {
-                        if let Ok(v) = u8::from_str_radix(rest, 16) {
-                            out.push(v);
-                            continue;
-                        }
-                    }
+                if let Some(rest) = r.strip_prefix("\\x")
+                    && rest.len() == 2
+                    && let Ok(v) = u8::from_str_radix(rest, 16)
+                {
+                    out.push(v);
+                    continue;
                 }
                 // Otherwise, write printable chars from the string.
                 for c in r.chars() {
@@ -749,7 +748,7 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 }
 
 fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(s.len() / 2);

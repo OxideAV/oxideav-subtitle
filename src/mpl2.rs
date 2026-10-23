@@ -361,10 +361,12 @@ mod tests {
     fn line_break() {
         let src = "[0][10]line1|line2\n";
         let t = parse(src.as_bytes()).unwrap();
-        assert!(t.cues[0]
-            .segments
-            .iter()
-            .any(|s| matches!(s, Segment::LineBreak)));
+        assert!(
+            t.cues[0]
+                .segments
+                .iter()
+                .any(|s| matches!(s, Segment::LineBreak))
+        );
     }
 
     #[test]

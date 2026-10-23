@@ -562,11 +562,11 @@ fn wrap_logical_line(
 
 #[cfg(feature = "text")]
 fn push_piece(line: &mut Vec<StyledPiece>, piece: StyledPiece) {
-    if let Some(last) = line.last_mut() {
-        if same_style(&last.style, &piece.style) {
-            last.text.push_str(&piece.text);
-            return;
-        }
+    if let Some(last) = line.last_mut()
+        && same_style(&last.style, &piece.style)
+    {
+        last.text.push_str(&piece.text);
+        return;
     }
     line.push(piece);
 }
@@ -717,11 +717,11 @@ fn flatten_segments(segments: &[Segment], style: RunStyle) -> Vec<Run> {
     // Collapse adjacent runs that have the same style, to keep lines tidy.
     let mut merged: Vec<Run> = Vec::with_capacity(out.len());
     for run in out {
-        if let Some(last) = merged.last_mut() {
-            if same_style(&last.style, &run.style) {
-                last.text.push_str(&run.text);
-                continue;
-            }
+        if let Some(last) = merged.last_mut()
+            && same_style(&last.style, &run.style)
+        {
+            last.text.push_str(&run.text);
+            continue;
         }
         merged.push(run);
     }
@@ -887,11 +887,11 @@ fn wrap_runs(runs: &[Run], max_cols: usize) -> Vec<Line> {
 }
 
 fn append_run(line: &mut Line, run: Run) {
-    if let Some(last) = line.pieces.last_mut() {
-        if same_style(&last.style, &run.style) {
-            last.text.push_str(&run.text);
-            return;
-        }
+    if let Some(last) = line.pieces.last_mut()
+        && same_style(&last.style, &run.style)
+    {
+        last.text.push_str(&run.text);
+        return;
     }
     line.pieces.push(run);
 }

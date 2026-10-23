@@ -1,7 +1,7 @@
 //! ASS / SSA override-tag style-resolution tests.
 
 use oxideav_subtitle::ass_resolve::{
-    resolve_line, ClipRegion, Move, ResolvedLine, Rgba, StyleBase,
+    ClipRegion, Move, ResolvedLine, Rgba, StyleBase, resolve_line,
 };
 
 fn base() -> StyleBase {
@@ -330,7 +330,7 @@ fn reset_named_swaps_active_base() {
     // \rBig switches the active base to one whose font size is 72; a later
     // parameterless \fs (reset-to-style) then resolves against the swapped
     // base rather than the line base.
-    use oxideav_subtitle::ass_resolve::{resolve_tokens_with_styles, StyleBase};
+    use oxideav_subtitle::ass_resolve::{StyleBase, resolve_tokens_with_styles};
     use oxideav_subtitle::ass_tags::tokenize;
 
     let line_base = StyleBase {
@@ -367,8 +367,8 @@ fn reset_named_unknown_falls_back_to_line_base() {
 
 #[test]
 fn wrap_mode_lands_on_layout() {
-    use oxideav_subtitle::ass_resolve::resolve_line;
     use oxideav_subtitle::WrapStyle;
+    use oxideav_subtitle::ass_resolve::resolve_line;
     let r = resolve_line("{\\q2}no wrap here", &base());
     assert_eq!(r.layout.wrap, Some(WrapStyle::None));
     // A line without \q leaves wrap None (defer to script-level WrapStyle).

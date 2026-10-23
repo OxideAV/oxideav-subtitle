@@ -1,7 +1,7 @@
 //! ASS / SSA `[Events]` Dialogue / Comment line parsing tests.
 
 use oxideav_subtitle::ass_event::{
-    event_to_string, fmt_time, parse_event, parse_time, AssEvent, DEFAULT_EVENT_FORMAT,
+    AssEvent, DEFAULT_EVENT_FORMAT, event_to_string, fmt_time, parse_event, parse_time,
 };
 use oxideav_subtitle::ass_style_row::parse_format;
 

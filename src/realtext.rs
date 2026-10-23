@@ -47,16 +47,16 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
     // opener so a round-trip keeps window attributes intact.
     let mut i = 0usize;
     let lc = text.to_ascii_lowercase();
-    if let Some(win_start) = lc.find("<window") {
-        if let Some(end_rel) = text[win_start..].find('>') {
-            let header_end = win_start + end_rel + 1;
-            track.extradata = text.as_bytes()[..header_end].to_vec();
-            // Append a trailing newline for neat formatting.
-            if !track.extradata.ends_with(b"\n") {
-                track.extradata.push(b'\n');
-            }
-            i = header_end;
+    if let Some(win_start) = lc.find("<window")
+        && let Some(end_rel) = text[win_start..].find('>')
+    {
+        let header_end = win_start + end_rel + 1;
+        track.extradata = text.as_bytes()[..header_end].to_vec();
+        // Append a trailing newline for neat formatting.
+        if !track.extradata.ends_with(b"\n") {
+            track.extradata.push(b'\n');
         }
+        i = header_end;
     }
 
     // Walk the rest, splitting into cues at each `<time .../>`.
@@ -100,13 +100,13 @@ pub fn parse(bytes: &[u8]) -> Result<SubtitleTrack> {
                     pending_start = attr_value(tag, "begin").and_then(|v| parse_seconds_ts(&v));
                     pending_end = attr_value(tag, "end").and_then(|v| parse_seconds_ts(&v));
                     // `<time begin dur/>` also supported.
-                    if pending_end.is_none() {
-                        if let (Some(s), Some(dur)) = (
+                    if pending_end.is_none()
+                        && let (Some(s), Some(dur)) = (
                             pending_start,
                             attr_value(tag, "dur").and_then(|v| parse_seconds_ts(&v)),
-                        ) {
-                            pending_end = Some(s + dur);
-                        }
+                        )
+                    {
+                        pending_end = Some(s + dur);
                     }
                 }
                 "window" => {
@@ -169,11 +169,7 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
 }
 
 pub fn probe(buf: &[u8]) -> u8 {
-    if looks_like_realtext(buf) {
-        95
-    } else {
-        0
-    }
+    if looks_like_realtext(buf) { 95 } else { 0 }
 }
 
 pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {
@@ -331,13 +327,13 @@ impl<'a> RtParser<'a> {
                 let name_lc = name.to_ascii_lowercase();
 
                 if is_close {
-                    if let Some(stop_name) = stop {
-                        if name_lc == stop_name {
-                            if !text_buf.is_empty() {
-                                out.push(Segment::Text(std::mem::take(&mut text_buf)));
-                            }
-                            return out;
+                    if let Some(stop_name) = stop
+                        && name_lc == stop_name
+                    {
+                        if !text_buf.is_empty() {
+                            out.push(Segment::Text(std::mem::take(&mut text_buf)));
                         }
+                        return out;
                     }
                     // Stray closer — drop.
                     continue;
@@ -410,10 +406,10 @@ fn split_tag_name(tag: &str) -> (&str, &str) {
 }
 
 fn classify_font(tag: &str, children: Vec<Segment>) -> Segment {
-    if let Some(col) = attr_value(tag, "color") {
-        if let Some(rgb) = parse_hex_color(&col) {
-            return Segment::Color { rgb, children };
-        }
+    if let Some(col) = attr_value(tag, "color")
+        && let Some(rgb) = parse_hex_color(&col)
+    {
+        return Segment::Color { rgb, children };
     }
     let family = attr_value(tag, "face");
     let size = attr_value(tag, "size").and_then(|s| s.parse::<f32>().ok());

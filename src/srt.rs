@@ -339,14 +339,14 @@ impl<'a> Parser<'a> {
                 if let Some(tag_end) = self.src[self.pos..].find('>') {
                     let tag = &self.src[self.pos + 1..self.pos + tag_end];
                     // Closing tag?
-                    if let Some(stop) = stop_tag {
-                        if tag.eq_ignore_ascii_case(&format!("/{}", stop)) {
-                            if !text_buf.is_empty() {
-                                out.push(Segment::Text(std::mem::take(&mut text_buf)));
-                            }
-                            self.pos += tag_end + 1;
-                            return out;
+                    if let Some(stop) = stop_tag
+                        && tag.eq_ignore_ascii_case(&format!("/{}", stop))
+                    {
+                        if !text_buf.is_empty() {
+                            out.push(Segment::Text(std::mem::take(&mut text_buf)));
                         }
+                        self.pos += tag_end + 1;
+                        return out;
                     }
                     // Dispatch to known openers.
                     let (name, _attrs) = split_tag(tag);
@@ -421,10 +421,10 @@ fn split_tag(tag: &str) -> (&str, &str) {
 fn classify_font_tag(full_tag: &str, children: Vec<Segment>) -> Segment {
     // full_tag is the inner text of `<...>`: e.g. `font color="#ff0000"`.
     let lc = full_tag.to_ascii_lowercase();
-    if let Some(col) = extract_attr(&lc, "color") {
-        if let Some(rgb) = parse_color(&col) {
-            return Segment::Color { rgb, children };
-        }
+    if let Some(col) = extract_attr(&lc, "color")
+        && let Some(rgb) = parse_color(&col)
+    {
+        return Segment::Color { rgb, children };
     }
     let family = extract_attr(&lc, "face");
     let size = extract_attr(&lc, "size").and_then(|s| s.parse::<f32>().ok());
