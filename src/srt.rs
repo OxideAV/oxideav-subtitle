@@ -535,6 +535,9 @@ fn named_color(name: &str) -> Option<(u8, u8, u8)> {
 /// Quick header check. Used by the container probe to tell SRT apart from
 /// other text formats.
 pub(crate) fn looks_like_srt(buf: &[u8]) -> bool {
+    if !crate::encoding::looks_like_text(buf) {
+        return false;
+    }
     let text = crate::encoding::decode_subtitle_text(buf);
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let first = match lines.next() {

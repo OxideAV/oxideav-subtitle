@@ -413,23 +413,60 @@ pub fn probe(buf: &[u8]) -> u8 {
 
 /// Containers dispatch — return the score used by this format's probe.
 pub fn looks_like_ttml(buf: &[u8]) -> u8 {
+    if !crate::encoding::looks_like_text(buf) {
+        return 0;
+    }
     let head = &buf[..buf.len().min(4096)];
     let text = String::from_utf8_lossy(head);
     let lc = text.to_ascii_lowercase();
-    let mut score: u8 = 0;
-    if lc.contains("<?xml") {
-        score += 15;
+    // TTML2 §8.1.1: `tt` "serves as the root document element of a
+    // document instance". The root is the first start tag after the
+    // prolog (XML declaration, comments, DOCTYPE, processing
+    // instructions); it may carry a namespace prefix (`<ttml:tt`). A
+    // document whose root is anything else (XHTML's `<tt>` teletype
+    // element, SVG, any other XML) is not TTML.
+    let Some(root) = root_element_name(&lc) else {
+        return 0;
+    };
+    let local = root.rsplit(':').next().unwrap_or(root);
+    if local != "tt" {
+        return 0;
     }
-    if lc.contains("<tt ") || lc.contains("<tt>") || lc.contains(":tt ") {
-        score += 40;
-    }
+    // §5.3 TT Namespace (`http://www.w3.org/ns/ttml`) declared: a
+    // confident match; a `tt` root without it (legacy namespace or
+    // none) still scores as a plausible document.
+    let mut score: u8 = 60;
     if lc.contains("http://www.w3.org/ns/ttml") {
-        score += 45;
+        score += 35;
     }
     if lc.contains("tts:") {
-        score = score.saturating_add(10);
+        score = score.saturating_add(5);
     }
     score.min(100)
+}
+
+/// Name (lower-cased, prefix kept) of the first element start tag in
+/// `lc`, skipping `<?…?>`, `<!--…-->` and `<!…>` prolog constructs.
+/// `None` when no start tag is found or non-markup text precedes it.
+fn root_element_name(lc: &str) -> Option<&str> {
+    let mut rest = lc.trim_start_matches('\u{feff}');
+    loop {
+        rest = rest.trim_start();
+        if let Some(r) = rest.strip_prefix("<?") {
+            rest = &r[r.find("?>")? + 2..];
+        } else if let Some(r) = rest.strip_prefix("<!--") {
+            rest = &r[r.find("-->")? + 3..];
+        } else if let Some(r) = rest.strip_prefix("<!") {
+            rest = &r[r.find('>')? + 1..];
+        } else {
+            let r = rest.strip_prefix('<')?;
+            let end = r
+                .find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/')
+                .unwrap_or(r.len());
+            let name = &r[..end];
+            return (!name.is_empty() && end < r.len()).then_some(name);
+        }
+    }
 }
 
 /// Decoder factory. Delegates to [`crate::codec::make_decoder`] when

@@ -181,7 +181,11 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
 
 /// Quick header check — did the buffer look like JACOsub?
 pub fn probe(buf: &[u8]) -> u8 {
-    if looks_like_jacosub(buf) { 85 } else { 0 }
+    if crate::encoding::looks_like_text(buf) && looks_like_jacosub(buf) {
+        85
+    } else {
+        0
+    }
 }
 
 /// Factory for a codec-registry decoder binding.

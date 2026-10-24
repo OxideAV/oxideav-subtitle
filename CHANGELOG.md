@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - edition 2024, MSRV 1.95
 
+### Fixed
+
+- content probes no longer claim binary media: the EBU STL probe scored 5
+  for any buffer whose byte 11 was printable (raw `.ac3` / `.yuv` /
+  `.mp4` opened as EBU STL and failed with "not a subtitle codec id"); it
+  now needs the full 1024-byte GSI block with a three-digit CPN and a
+  `STLxx.yy` DFC (95), otherwise 0
+- every text-format probe (SRT, WebVTT, MicroDVD, MPL2, MPsub, VPlayer,
+  PJS, AQTitle, JACOsub, RealText, SubViewer 1/2, TTML, SAMI) first checks
+  that the buffer head reads as text (no NUL, at most 1 % C0 controls;
+  legacy code pages and UTF-16 with BOM still pass)
+- TTML scores only when the root element is `tt` (TTML2 §8.1.1; 95 with
+  the TT namespace, 60 without) — an XML declaration alone, XHTML's `<tt>`
+  or SVG no longer score; SAMI needs the `<SAMI>` element (`<SYNC>` alone
+  scored 30)
+
 ## [0.1.4](https://github.com/OxideAV/oxideav-subtitle/compare/v0.1.3...v0.1.4) - 2026-10-06
 
 ### Other

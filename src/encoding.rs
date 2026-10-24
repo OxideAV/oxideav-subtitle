@@ -42,6 +42,35 @@
 //! among interoperating decoders (mpv, VLC, subtitle-edit) is to accept
 //! the same four BOMs and the same three line terminators.
 
+/// How many leading bytes [`looks_like_text`] inspects.
+const TEXT_SNIFF_BYTES: usize = 4096;
+
+/// Content gate shared by every text-format probe: `true` when the head
+/// of `bytes` (its first 4 KiB, BOM-decoded like
+/// [`decode_subtitle_text`]) reads as text. A NUL code point, or C0
+/// control characters other than TAB / LF / FF / CR / SUB (the DOS
+/// end-of-file marker) making up more than 1 % of the characters, mark
+/// the buffer as binary: compressed audio / video / image payloads
+/// essentially always contain both within 4 KiB, while no text subtitle
+/// format uses them. Invalid UTF-8 is *not* held against the buffer
+/// (legacy 8-bit and CJK code pages decode to U+FFFD here but are real
+/// subtitles). Empty input is not text.
+pub(crate) fn looks_like_text(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(TEXT_SNIFF_BYTES)];
+    let text = decode_text_lossy(head);
+    let (mut total, mut bad) = (0usize, 0usize);
+    for c in text.chars() {
+        total += 1;
+        match c {
+            '\0' => return false,
+            '\t' | '\n' | '\r' | '\x0c' | '\x1a' => {}
+            c if (c as u32) < 0x20 || c == '\x7f' => bad += 1,
+            _ => {}
+        }
+    }
+    total != 0 && bad * 100 <= total
+}
+
 /// One-shot helper: sniff the BOM, decode to UTF-8, normalise line
 /// endings to LF. Every parser in this crate routes its raw byte slice
 /// through this function to get a `String` it can then split on `\n`.
@@ -134,6 +163,26 @@ fn decode_utf16(bytes: &[u8], little_endian: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_gate_accepts_text_and_rejects_binary() {
+        assert!(looks_like_text(b"1\n00:00:01,000 --> 00:00:02,000\nHi\n"));
+        assert!(looks_like_text(b"tab\tseparated\r\nform\x0cfeed\x1a"));
+        // Legacy 8-bit code page (invalid UTF-8) is still text.
+        assert!(looks_like_text(
+            b"Za\xbf\xf3\xb3\xe6 g\xea\xb6l\xb1 ja\xbc\xf1\n"
+        ));
+        // UTF-16 LE with BOM.
+        assert!(looks_like_text(&[0xFF, 0xFE, b'H', 0, b'i', 0, b'\n', 0]));
+        assert!(!looks_like_text(b""));
+        assert!(!looks_like_text(b"abc\0def"));
+        // C0 controls above the 1 % budget.
+        let mut s = b"x".repeat(100);
+        s[10] = 0x01;
+        assert!(looks_like_text(&s));
+        s[20] = 0x02;
+        assert!(!looks_like_text(&s));
+    }
 
     #[test]
     fn plain_utf8_passes_through() {

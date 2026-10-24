@@ -375,25 +375,24 @@ pub fn probe(buf: &[u8]) -> u8 {
 }
 
 pub fn looks_like_ebu_stl(buf: &[u8]) -> u8 {
-    if buf.len() < 16 {
+    // The parser needs the whole 1024-byte GSI block, so a shorter
+    // buffer cannot be an EBU STL file.
+    if buf.len() < GSI_SIZE {
         return 0;
     }
-    // CPN: 3 ASCII digits (e.g. "850", "437").
-    let cpn_ok = buf[..3].iter().all(|&b| b.is_ascii_digit());
-    // DFC begins with "STL".
-    let dfc_ok = &buf[3..6] == b"STL";
-    let mut score = 0u8;
-    if cpn_ok {
-        score += 25;
-    }
-    if dfc_ok {
-        score += 70;
-    }
-    // DSC is an ASCII char.
-    if buf.len() >= 12 && buf[11].is_ascii() && !buf[11].is_ascii_control() {
-        score = score.saturating_add(5);
-    }
-    score.min(100)
+    // CPN (bytes 0..3): a three-digit code page number, e.g. "850".
+    let cpn_ok = buf[..3].iter().all(u8::is_ascii_digit);
+    // DFC (bytes 3..11): `STLxx.yy` — "STL", the two-digit frame rate,
+    // ".", two digits (e.g. "STL25.01", "STL30.01").
+    let dfc = &buf[3..11];
+    let dfc_ok = &dfc[..3] == b"STL"
+        && dfc[3..5].iter().all(u8::is_ascii_digit)
+        && dfc[5] == b'.'
+        && dfc[6..8].iter().all(u8::is_ascii_digit);
+    // Both are required: no other field carries a signature, and either
+    // on its own is common in unrelated data (three digits starting a
+    // text log; a printable byte at offset 11 in any binary stream).
+    if cpn_ok && dfc_ok { 95 } else { 0 }
 }
 
 pub fn make_decoder(

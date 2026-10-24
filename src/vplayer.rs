@@ -84,6 +84,9 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
 /// Quick probe — positive score if the first non-empty line parses as
 /// `HH:MM:SS:text`.
 pub fn probe(buf: &[u8]) -> u8 {
+    if !crate::encoding::looks_like_text(buf) {
+        return 0;
+    }
     let text = crate::encoding::decode_subtitle_text(buf);
     let mut checked = 0;
     let mut hits = 0;

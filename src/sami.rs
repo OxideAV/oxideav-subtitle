@@ -195,12 +195,18 @@ pub fn probe(buf: &[u8]) -> u8 {
 }
 
 pub fn looks_like_sami(buf: &[u8]) -> u8 {
+    if !crate::encoding::looks_like_text(buf) {
+        return 0;
+    }
     let head = &buf[..buf.len().min(4096)];
     let text = String::from_utf8_lossy(head).to_ascii_lowercase();
-    let mut score = 0u8;
-    if text.contains("<sami") {
-        score += 60;
+    // The `<SAMI>` document element is required; `<SYNC>` / a CSS
+    // `<STYLE>` block only add confidence on top of it (a stray
+    // `<sync` in some other markup is not a SAMI file).
+    if !text.contains("<sami") {
+        return 0;
     }
+    let mut score = 60u8;
     if text.contains("<sync") {
         score += 30;
     }

@@ -162,7 +162,11 @@ pub fn write(track: &SubtitleTrack) -> Result<Vec<u8>> {
 }
 
 pub fn probe(buf: &[u8]) -> u8 {
-    if looks_like_subviewer1(buf) { 80 } else { 0 }
+    if crate::encoding::looks_like_text(buf) && looks_like_subviewer1(buf) {
+        80
+    } else {
+        0
+    }
 }
 
 pub fn make_decoder(params: &CodecParameters) -> Result<Box<dyn Decoder>> {

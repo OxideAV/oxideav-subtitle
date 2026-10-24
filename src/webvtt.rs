@@ -1635,6 +1635,9 @@ fn parse_css_color(s: &str) -> Option<(u8, u8, u8, u8)> {
 }
 
 pub(crate) fn looks_like_webvtt(buf: &[u8]) -> bool {
+    if !crate::encoding::looks_like_text(buf) {
+        return false;
+    }
     let stripped = if buf.starts_with(&[0xEF, 0xBB, 0xBF]) {
         &buf[3..]
     } else {
