@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/OxideAV/oxideav-subtitle/compare/v0.1.4...v0.1.5) - 2026-10-24
+
+### Other
+
+- EBU STL needs CPN + STLxx.yy DFC; text probes gated on a text sniff; TTML/SAMI need their root element
+- hardware-engine crates load OS APIs through dlsym, not libloading
+- edition 2024, MSRV 1.95
+
 ### Changed
 
 - edition 2024, MSRV 1.95
