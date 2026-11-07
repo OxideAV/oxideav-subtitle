@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/OxideAV/oxideav-subtitle/compare/v0.1.5...v0.2.0) - 2026-11-07
+
+### Other
+
+- API hygiene: non_exhaustive ASS records/tags + SourceFormat, with_* builders
+
 ### Changed
 
 - API hygiene: `ir::SourceFormat`, `AssEvent`, `StyleBase`, `ResolvedStyle`, `ResolvedSpan`, `LineLayout`, `ResolvedLine`, `KaraokeSyllable`, `EvaluatedSpan`, `EvaluatedLine`, `AssScriptInfo`, `AssToken` and `AssTag` are now `#[non_exhaustive]`. Build the input records with `Default` + `with_*`.
