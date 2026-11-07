@@ -94,6 +94,7 @@ impl Rgba {
 /// start from [`StyleBase::default`] (the spec-neutral 18pt opaque-white
 /// Arial) and override individual fields.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct StyleBase {
     pub font_name: String,
     pub font_size: f64,
@@ -117,6 +118,141 @@ pub struct StyleBase {
     /// Numpad alignment (1..=9), the resolved base from the style row.
     pub alignment: u8,
     pub encoding: i32,
+}
+
+impl StyleBase {
+    /// Set [`Self::font_name`].
+    #[must_use]
+    pub fn with_font_name(mut self, v: String) -> Self {
+        self.font_name = v;
+        self
+    }
+
+    /// Set [`Self::font_size`].
+    #[must_use]
+    pub fn with_font_size(mut self, v: f64) -> Self {
+        self.font_size = v;
+        self
+    }
+
+    /// Set [`Self::bold`].
+    #[must_use]
+    pub fn with_bold(mut self, v: bool) -> Self {
+        self.bold = v;
+        self
+    }
+
+    /// Set [`Self::weight`].
+    #[must_use]
+    pub fn with_weight(mut self, v: Option<u32>) -> Self {
+        self.weight = v;
+        self
+    }
+
+    /// Set [`Self::italic`].
+    #[must_use]
+    pub fn with_italic(mut self, v: bool) -> Self {
+        self.italic = v;
+        self
+    }
+
+    /// Set [`Self::underline`].
+    #[must_use]
+    pub fn with_underline(mut self, v: bool) -> Self {
+        self.underline = v;
+        self
+    }
+
+    /// Set [`Self::strike`].
+    #[must_use]
+    pub fn with_strike(mut self, v: bool) -> Self {
+        self.strike = v;
+        self
+    }
+
+    /// Set [`Self::primary`].
+    #[must_use]
+    pub fn with_primary(mut self, v: Rgba) -> Self {
+        self.primary = v;
+        self
+    }
+
+    /// Set [`Self::secondary`].
+    #[must_use]
+    pub fn with_secondary(mut self, v: Rgba) -> Self {
+        self.secondary = v;
+        self
+    }
+
+    /// Set [`Self::outline_color`].
+    #[must_use]
+    pub fn with_outline_color(mut self, v: Rgba) -> Self {
+        self.outline_color = v;
+        self
+    }
+
+    /// Set [`Self::shadow_color`].
+    #[must_use]
+    pub fn with_shadow_color(mut self, v: Rgba) -> Self {
+        self.shadow_color = v;
+        self
+    }
+
+    /// Set [`Self::border`].
+    #[must_use]
+    pub fn with_border(mut self, v: f64) -> Self {
+        self.border = v;
+        self
+    }
+
+    /// Set [`Self::shadow`].
+    #[must_use]
+    pub fn with_shadow(mut self, v: f64) -> Self {
+        self.shadow = v;
+        self
+    }
+
+    /// Set [`Self::scale_x`].
+    #[must_use]
+    pub fn with_scale_x(mut self, v: f64) -> Self {
+        self.scale_x = v;
+        self
+    }
+
+    /// Set [`Self::scale_y`].
+    #[must_use]
+    pub fn with_scale_y(mut self, v: f64) -> Self {
+        self.scale_y = v;
+        self
+    }
+
+    /// Set [`Self::spacing`].
+    #[must_use]
+    pub fn with_spacing(mut self, v: f64) -> Self {
+        self.spacing = v;
+        self
+    }
+
+    /// Set [`Self::angle_z`].
+    #[must_use]
+    pub fn with_angle_z(mut self, v: f64) -> Self {
+        self.angle_z = v;
+        self
+    }
+
+    /// Set [`Self::alignment`].
+    #[must_use]
+    pub fn with_alignment(mut self, v: u8) -> Self {
+        self.alignment = v;
+        self
+    }
+
+    /// Set [`Self::encoding`].
+    #[must_use]
+    pub fn with_encoding(mut self, v: i32) -> Self {
+        self.encoding = v;
+        self
+    }
 }
 
 impl Default for StyleBase {
@@ -213,6 +349,7 @@ fn align_to_numpad(a: oxideav_core::TextAlign) -> u8 {
 /// holds the effective value at the span, with reset (`None`-parameter)
 /// tags restoring the base value.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ResolvedStyle {
     pub font_name: String,
     pub font_size: f64,
@@ -279,6 +416,7 @@ impl ResolvedStyle {
 
 /// One contiguous run of visible text plus the styling that applies to it.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ResolvedSpan {
     /// The visible text of this run, with `\N`/`\n`/`\h` already turned
     /// into `\n` / space / NBSP per the line's wrap mode (no wrap context
@@ -326,6 +464,7 @@ pub struct Move {
 /// once in a line"; when one appears more than once the *last* occurrence
 /// in source order takes effect.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct LineLayout {
     /// `\pos(x, y)`.
     pub pos: Option<(i32, i32)>,
@@ -348,6 +487,7 @@ pub struct LineLayout {
 /// The full resolution of a Dialogue `Text` field: per-run resolved
 /// styling plus the whole-line layout state.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ResolvedLine {
     pub spans: Vec<ResolvedSpan>,
     pub layout: LineLayout,

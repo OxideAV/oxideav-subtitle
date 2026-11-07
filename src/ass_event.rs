@@ -37,6 +37,7 @@ pub const DEFAULT_EVENT_FORMAT: &[&str] = &[
 
 /// A parsed `[Events]` row — a `Dialogue:` or `Comment:` line.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AssEvent {
     /// `true` for a `Comment:` row (not rendered), `false` for
     /// `Dialogue:`.
@@ -61,6 +62,85 @@ pub struct AssEvent {
     /// as written so [`crate::ass_tags::tokenize`] / [`crate::ass_resolve`]
     /// can take it from here.
     pub text: String,
+}
+
+impl AssEvent {
+    /// Set [`Self::comment`].
+    #[must_use]
+    pub fn with_comment(mut self, v: bool) -> Self {
+        self.comment = v;
+        self
+    }
+
+    /// Set [`Self::layer`].
+    #[must_use]
+    pub fn with_layer(mut self, v: i64) -> Self {
+        self.layer = v;
+        self
+    }
+
+    /// Set [`Self::start_cs`].
+    #[must_use]
+    pub fn with_start_cs(mut self, v: CentiSec) -> Self {
+        self.start_cs = v;
+        self
+    }
+
+    /// Set [`Self::end_cs`].
+    #[must_use]
+    pub fn with_end_cs(mut self, v: CentiSec) -> Self {
+        self.end_cs = v;
+        self
+    }
+
+    /// Set [`Self::style`].
+    #[must_use]
+    pub fn with_style(mut self, v: String) -> Self {
+        self.style = v;
+        self
+    }
+
+    /// Set [`Self::name`].
+    #[must_use]
+    pub fn with_name(mut self, v: String) -> Self {
+        self.name = v;
+        self
+    }
+
+    /// Set [`Self::margin_l`].
+    #[must_use]
+    pub fn with_margin_l(mut self, v: i32) -> Self {
+        self.margin_l = v;
+        self
+    }
+
+    /// Set [`Self::margin_r`].
+    #[must_use]
+    pub fn with_margin_r(mut self, v: i32) -> Self {
+        self.margin_r = v;
+        self
+    }
+
+    /// Set [`Self::margin_v`].
+    #[must_use]
+    pub fn with_margin_v(mut self, v: i32) -> Self {
+        self.margin_v = v;
+        self
+    }
+
+    /// Set [`Self::effect`].
+    #[must_use]
+    pub fn with_effect(mut self, v: String) -> Self {
+        self.effect = v;
+        self
+    }
+
+    /// Set [`Self::text`].
+    #[must_use]
+    pub fn with_text(mut self, v: String) -> Self {
+        self.text = v;
+        self
+    }
 }
 
 /// Parse a `Dialogue:` / `Comment:` event row against an ordered field

@@ -9,6 +9,7 @@ pub use oxideav_core::{CuePosition, Segment, SubtitleCue, SubtitleStyle, TextAli
 
 /// Which on-disk flavour the track was parsed from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SourceFormat {
     Srt,
     WebVtt,
@@ -37,6 +38,36 @@ pub struct SubtitleTrack {
     /// `[V4+ Styles]` + `[Events]` lead-in). Preserved so remuxers can
     /// replay byte-for-byte where that's valuable.
     pub extradata: Vec<u8>,
+}
+
+impl SubtitleTrack {
+    /// Set [`Self::styles`].
+    #[must_use]
+    pub fn with_styles(mut self, v: Vec<SubtitleStyle>) -> Self {
+        self.styles = v;
+        self
+    }
+
+    /// Set [`Self::cues`].
+    #[must_use]
+    pub fn with_cues(mut self, v: Vec<SubtitleCue>) -> Self {
+        self.cues = v;
+        self
+    }
+
+    /// Set [`Self::metadata`].
+    #[must_use]
+    pub fn with_metadata(mut self, v: Vec<(String, String)>) -> Self {
+        self.metadata = v;
+        self
+    }
+
+    /// Set [`Self::extradata`].
+    #[must_use]
+    pub fn with_extradata(mut self, v: Vec<u8>) -> Self {
+        self.extradata = v;
+        self
+    }
 }
 
 impl SubtitleTrack {

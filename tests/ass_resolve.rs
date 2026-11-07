@@ -333,16 +333,10 @@ fn reset_named_swaps_active_base() {
     use oxideav_subtitle::ass_resolve::{StyleBase, resolve_tokens_with_styles};
     use oxideav_subtitle::ass_tags::tokenize;
 
-    let line_base = StyleBase {
-        font_size: 18.0,
-        ..StyleBase::default()
-    };
+    let line_base = StyleBase::default().with_font_size(18.0);
     let toks = tokenize("{\\fs40}A{\\rBig}B{\\fs}C");
     let r = resolve_tokens_with_styles(&toks, &line_base, |name| {
-        (name == "Big").then(|| StyleBase {
-            font_size: 72.0,
-            ..StyleBase::default()
-        })
+        (name == "Big").then(|| StyleBase::default().with_font_size(72.0))
     });
     // "A" under the explicit \fs40.
     assert_eq!(r.spans[0].text, "A");

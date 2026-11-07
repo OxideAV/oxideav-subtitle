@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- API hygiene: `ir::SourceFormat`, `AssEvent`, `StyleBase`, `ResolvedStyle`, `ResolvedSpan`, `LineLayout`, `ResolvedLine`, `KaraokeSyllable`, `EvaluatedSpan`, `EvaluatedLine`, `AssScriptInfo`, `AssToken` and `AssTag` are now `#[non_exhaustive]`. Build the input records with `Default` + `with_*`.
+- `ir::SubtitleTrack` stays exhaustive for now because `oxideav-ass` builds it with a struct literal. The new `with_*` setters give it a migration path. The fixed-value enums (`WrapStyle`, `Collisions`, `ClipRegion`, `DrawCmd`, `AssColorTarget`, `AssKaraokeKind`, `AssRotationAxis`, `AssBorderAxis`, `AssBlurKind`, `AssClipShape`, `AssFadeSpec`, `DefaultClassKind`) and the value types `Rgba` / `Move` also stay exhaustive.
+
+### Added
+
+- `with_*` setters on `StyleBase` (every field), `AssEvent` (every field) and `SubtitleTrack` (`with_styles` / `with_cues` / `with_metadata` / `with_extradata`).
+
 ## [0.1.5](https://github.com/OxideAV/oxideav-subtitle/compare/v0.1.4...v0.1.5) - 2026-10-24
 
 ### Other

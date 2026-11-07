@@ -128,19 +128,18 @@ fn event_roundtrips_through_serialize() {
 
 #[test]
 fn event_to_string_shape() {
-    let ev = AssEvent {
-        comment: false,
-        layer: 0,
-        start_cs: 100,
-        end_cs: 350,
-        style: "Default".into(),
-        name: String::new(),
-        margin_l: 0,
-        margin_r: 0,
-        margin_v: 0,
-        effect: String::new(),
-        text: "Hi".into(),
-    };
+    let ev = AssEvent::default()
+        .with_comment(false)
+        .with_layer(0)
+        .with_start_cs(100)
+        .with_end_cs(350)
+        .with_style("Default".into())
+        .with_name(String::new())
+        .with_margin_l(0)
+        .with_margin_r(0)
+        .with_margin_v(0)
+        .with_effect(String::new())
+        .with_text("Hi".into());
     assert_eq!(
         event_to_string(&ev, DEFAULT_EVENT_FORMAT),
         "Dialogue: 0,0:00:01.00,0:00:03.50,Default,,0,0,0,,Hi"

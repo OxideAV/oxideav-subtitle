@@ -462,6 +462,7 @@ use crate::ass_tags::{AssKaraokeKind, AssToken};
 ///
 /// Produced by [`karaoke_fills`].
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct KaraokeSyllable {
     /// The visible text of the syllable (between this beat and the next).
     pub text: String,
@@ -572,6 +573,7 @@ use crate::ass_resolve::ResolvedLine;
 /// instant and its karaoke fill fraction (`1.0` when the run carries no
 /// `\k` beat).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct EvaluatedSpan {
     /// The visible text of the run.
     pub text: String,
@@ -590,6 +592,7 @@ pub struct EvaluatedSpan {
 /// default when `None`) with `fade_alpha` multiplied into every run's
 /// component alpha.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct EvaluatedLine {
     /// Effective `(x, y)` from `\move` / `\pos`, or `None` (default
     /// placement) when the line carries neither.

@@ -145,6 +145,7 @@ impl Collisions {
 /// Even those are missing on real-world files often enough that we
 /// don't force them either; callers decide what to do with `None`.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct AssScriptInfo {
     pub title: Option<String>,
     pub original_script: Option<String>,
